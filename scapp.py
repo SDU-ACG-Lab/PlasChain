@@ -510,8 +510,6 @@ def main():
         create_hits_fasta.create_hits(fasta_ofile, confident_plasmids_fname, confident_plasmid_ofile)
 
         time_end = time.time()
-        logger.info("{} seconds to find shortest path".format(
-            utils.path_find_time_consume))
 
         logger.info("{} seconds to filter confident plasmids".format(
             time_end-time_start))
