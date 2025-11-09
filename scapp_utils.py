@@ -732,10 +732,10 @@ def get_edge_cost(G, in_nodes:list, out_nodes:list, in_score:int, out_score:int,
     # 内部调用 get_supports，它会从 G.graph 中查找数据
     support = get_supports(G, in_nodes, out_nodes) 
 
-    cost = (1. - (np.sqrt(in_score * out_score))) + \
-           (1. - cosine_similarity(in_vec.reshape(1, -1), out_vec.reshape(1, -1))[0][0]) + \
+    cost = (1 - (np.sqrt(in_score * out_score))) + \
+           (1 - cosine_similarity(in_vec.reshape(1, -1), out_vec.reshape(1, -1))[0][0]) + \
            abs(in_cov - out_cov) / max(in_cov, out_cov) + \
-           1 / (1 + support) 
+           (1 / (1 + support)) 
            
     return cost
 
@@ -965,14 +965,17 @@ def is_good_cyc(path, valid_mate_pairs):
     """ check all non-repeat nodes only have mates
         mapping to contigs in the cycle
     """
+    mate_domain_node = 0
     for nd in path:
         mate_tigs = valid_mate_pairs.get(nd, set())
       
         num_mates_in_path = sum([1 for x in mate_tigs if (x in path)])
         num_mates_not_in_path = len(mate_tigs)-num_mates_in_path
-        if num_mates_in_path < num_mates_not_in_path:
-            logger.info(f"Node {nd} has majority of mates not on path: {num_mates_in_path} in path, {num_mates_not_in_path} not in path")
-            return False
+        if num_mates_in_path >= num_mates_not_in_path:
+            mate_domain_node+=1
+    if mate_domain_node < len(path)/2:
+        logger.info(f"mate_domain_node: {mate_domain_node}, path_len: {len(path)}")
+        return False
     return True
     
 #########################
@@ -1676,13 +1679,13 @@ def _dijkstra_multisource(G, path_dict: dict, SEQS, source, weight, pred=None, p
                         else:
                             v_score, v_vec = G.nodes[v[0]]['score'], G.nodes[v[0]]['freq_vec']
                         cost = get_edge_cost(G, v, [u] + u_path, v_score, u_score, v_vec, u_vec, max_k_val)
-                        vu_dist = dist[v[-1]] + cost
+                        vu_dist = min(dist[v[-1]], cost)
 
-                        if u in dist:
-                            if vu_dist < dist[u]:
+                        if u_path[-1] in dist:
+                            if vu_dist < dist[u_path[-1]]:
                                 raise ValueError('Contradictory paths found: negative weights?')
-                        elif u not in seen or vu_dist < seen[u]:
-                            seen[u] = vu_dist
+                        elif u_path[-1] not in seen or vu_dist < seen[u_path[-1]]:
+                            seen[u_path[-1]] = vu_dist
                             new_contigs = used_contigs + [u_contig_name]  # ← 记录 contig
                             push(fringe, (vu_dist, next(c), ([u] + u_path, [u_score, u_vec], new_contigs)))
                             if paths is not None:
@@ -1697,7 +1700,7 @@ def _dijkstra_multisource(G, path_dict: dict, SEQS, source, weight, pred=None, p
                 else:
                     v_score, v_vec = G.nodes[v[0]]['score'], G.nodes[v[0]]['freq_vec']
                 cost = get_edge_cost(G, v, [u], v_score, u_score, v_vec, u_vec, max_k_val)
-                vu_dist = dist[v[-1]] + cost
+                vu_dist = min(dist[v[-1]], cost)
 
                 if u in dist:
                     if vu_dist < dist[u]:
