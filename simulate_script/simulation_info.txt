@@ -1,0 +1,8 @@
+Randomly selected 2 bacteria
+random select 1 short plasmids. 
+read length	126
+chromosome total size	5615813
+plasmid total size	102473
+chromosome_reads	100000
+plasmid reads: 4937 
+Sequencing depth: 2.31×

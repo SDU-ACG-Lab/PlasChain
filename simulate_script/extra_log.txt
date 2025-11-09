@@ -1,0 +1,8 @@
+Dealing with ./bacteria/GCA_001636255.1_ASM163625v1_genomic.fna
+>CP015379.1detected;
+>CP015380.1detected;
+1 plasmids and 1 chromosomes detected.
+Dealing with ./bacteria/GCF_000006685.1_ASM668v1_genomic.fna
+>NC_002620.2detected;
+>NC_002182.1detected;
+1 plasmids and 1 chromosomes detected.
