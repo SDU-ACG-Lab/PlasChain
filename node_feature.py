@@ -21,7 +21,7 @@ def get_kmers(seq, k):
     for i in range(len(seq) - k + 1):
         yield seq[i:i+k]
 
-def contig_to_freq_vector_136(contig_seq, k=4):
+def contig_to_freq_vector(contig_seq, k=4):
     """
     Convert a contig DNA sequence to a normalized k-mer frequency vector 
     of length 136, where k-mers are merged with their reverse complements.

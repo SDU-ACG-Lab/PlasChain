@@ -119,7 +119,7 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
     loop_ofile = os.path.join(outdir,basename+".self_loops.fasta")
     contig_path_ofile = os.path.join(outdir,basename+".contig.fasta")
     contig_path_score_ofile = os.path.join(outdir,basename+".contig.score.fasta")
-    before_merge_path_ofile = os.path.join(outdir,basename+".before.merge.cycs.fasta")
+    before_merge_path_ofile = os.path.join(outdir,basename+".before.cycs.fasta")
     
     f_before_cyc_fasta = open(before_merge_path_ofile,'w')
     f_cycs_fasta = open(fasta_ofile, 'w') # output 1 - fasta of sequences
@@ -135,28 +135,26 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
     # first graph is used to calculate path CV during peeling cycles
     original_comp = copy.deepcopy(G)
 
-    # second graph is used to calculate path CV during merge cycles
-    original_comp1 = copy.deepcopy(G)
-
     path_count = 0
     SEQS, id_to_fullname = get_fastg_seqs_dict(fastg,G)
 
-    # logger.info("id_dict:\n")
-    # for key in id_to_fullname.keys():
-    #     logger.info(f"{key}\t {id_to_fullname[key]}\n")
-
     # remove dead end to trim contig path
-    remove_dead_ends(G)
+    remove_dead_ends(original_comp)
     
     print(f"get contig path which is longer than {min_contig_path_len}")
-    path_dict,contigs_path_name_dict, node_to_contig, scores_dict= get_contig_path(path_file, id_to_fullname,SEQS,G,contig_path_ofile,contig_path_score_ofile,min_contig_path_len=min_contig_path_len,max_k=max_k,num_procs=num_procs)
+    path_dict,contigs_path_name_dict, node_to_contig, scores_dict= get_contig_path(path_file, id_to_fullname,SEQS,original_comp,contig_path_ofile,contig_path_score_ofile,min_contig_path_len=min_contig_path_len,max_k=max_k,num_procs=num_procs)
 
+    mean, std = estimate_insert_size_distribution(bamfile)
+    pe_contigs_path_dict, valid_pairs = get_pe_support_evidence(G, bamfile, mean, std, max_k)
+    pe_support_dict = build_pe_support_dict(pe_contigs_path_dict)
+    G.graph['pe_support_data'] = pe_support_dict
 
     # logger.info("path_dict:\n")
     # for key in path_dict.keys():
     #     logger.info(f"{key}\t {path_dict[key]}\n")
 
     # add a score to every node
+    get_node_freq_vec(G)
     if use_scores:
         get_node_scores(scores_file,G)
 
@@ -193,7 +191,7 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
         # This may
         smaller_comps = set()
         for comp in comps:
-            remove_hi_confidence_chromosome(comp)
+            remove_hi_confidence_chromosome(comp,node_to_contig)
             smaller_comps.update((comp.subgraph(c).copy() for c in nx.strongly_connected_components(comp)))
         comps = smaller_comps
 
@@ -234,17 +232,16 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
              continue # have seen the RC version of component
         COMP = nx.DiGraph()
         COMP = c.to_directed()
-
+        
     
         rc_nodes = [rc_node(n) for n in COMP.nodes()]
         # logger.info(f"add {str(rc_nodes)}")
         # logger.info(f"add {str(COMP.nodes())}")
         VISITED_NODES.update(COMP.nodes())
         VISITED_NODES.update(rc_nodes)
-
         # 核心函数
-        # 参数的前三个， COMP当前强连通分支， original_comp，原图的拷贝，用于计算原图(包含dead end)中的discounted coverage, original_comp1 原图的拷贝，用于计算merge cycle时的CV值
-        path_set, merge_time,path_set_before_merge = process_component(COMP, original_comp, original_comp1 ,max_k, min_length, max_CV, SEQS, bamfile, pool, path_dict,node_to_contig,contigs_path_name_dict,use_scores, use_genes, num_procs)
+        # 参数的前三个， COMP当前强连通分支， G原图，用于计算原图(包含dead end)中的discounted coverage
+        path_set, merge_time,path_set_before_merge = process_component(COMP, G ,max_k, min_length, max_CV, SEQS, pool, path_dict,node_to_contig,contigs_path_name_dict,valid_pairs,use_scores, use_genes, num_procs)
         merge_cost+=merge_time
         for p in path_set:
             name = get_spades_type_name(path_count, p[0], SEQS, max_k, G, p[1])
