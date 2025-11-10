@@ -13,7 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from parse_plasmid_scores import transformByLength
 from sklearn.metrics.pairwise import cosine_similarity
-from collections import defaultdict
+from collections import defaultdict, Counter
 from node_feature import *
 
 import PARAMS
@@ -1176,9 +1176,9 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, pool, path_dict,
         # 使用了contig path的优先，低CV作为第二排序依据
         path_tuples.sort(key=lambda item: item[0])
 
-        logger.info("candidate path:")
-        for cv,p,weight,use_contig in path_tuples:
-            logger.info(f"\tpath: {p}, CV: {cv}, weight: {weight},use_contig: {use_contig} \n")
+        # logger.info("candidate path:")
+        # for cv,p,weight,use_contig in path_tuples:
+        #     logger.info(f"\tpath: {p}, CV: {cv}, weight: {weight},use_contig: {use_contig} \n")
 
         for pt in path_tuples:
             curr_path = pt[1]
@@ -1256,9 +1256,14 @@ def merge_cycle(paths_set:set,SEQS,max_k,node_to_contig,contigs_path_name_dict,v
                 if len(intersection)>0:
                     # 相似度判断
                     to_merge =  is_similar(cur_cov,other_cov)
+                    cur_counter = Counter(cur_path)
+                    other_counter = Counter(other_path)
+                    
+                    diff_cur = cur_counter - other_counter
+                    diff_other = other_counter - cur_counter
 
-                    cur_vec = contig_to_freq_vector(get_seq_from_path(cur_path, SEQS, max_k, cycle=True))
-                    other_vec = contig_to_freq_vector(get_seq_from_path(other_path, SEQS, max_k, cycle=True))
+                    cur_vec = contig_set_to_freq_vector([SEQS[nd] for nd in diff_cur.elements()])
+                    other_vec = contig_set_to_freq_vector(SEQS[nd] for nd in diff_other.elements())
                     similarity = cosine_similarity(cur_vec.reshape(1, -1),other_vec.reshape(1, -1))[0][0]
                     merged_path = None
                     logger.info(f"Checking merge: \nCur: {cur_path}  \nOther: {other_path}  \nIntersection: {intersection} \nSimilarity: {similarity}")
