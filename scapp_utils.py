@@ -1593,7 +1593,7 @@ def single_source_dijkstra(G, path_dict,SEQS,source, target=None, cutoff=None,
                     min_len = finaldist
                     final_path = finalpath
                     # logger.info(f"final add contig path: {sources[0]}--->{target}: {finalpath}, weight: {finaldist}")
-                    use_contig = target_info[2]
+                    use_contig = [contig_name] + target_info[2]
             except KeyError:
                 # logger.info(f"has not path from {sources[0]} to {target} through {contig_name}")
                 continue
@@ -1633,30 +1633,50 @@ def _weight_function(G, weight):
 
 
 def _dijkstra_multisource(G, path_dict: dict, SEQS, source, weight, pred=None, paths=None,
-                          cutoff=None, target=None, max_k_val=77):
+                                cutoff=None, target=None, max_k_val=77):
+    """
+    使用 Min-Max 松弛规则的 Dijkstra 风格路径搜索，寻找瓶颈最小的路径。
+    在瓶颈权重相同时，使用路径长度（边数）作为平局打破规则，选择更短的路径。
+    """
     G_succ = G._succ if G.is_directed() else G._adj
     node_set = set(G_succ.keys())
     push = heappush
     pop = heappop
+    
+    # dist 存储 Min-Max 权重（瓶颈 Cost）
     dist = {}
+    # seen 存储在 fringe 中的 Min-Max 权重
     seen = {}
     c = count()
     fringe = []
-    target_info = (None,None,None)
+    target_info = (None, None, None)
 
-    # source 应为 (node_list, record) 或仅 [node_list]
+    # source 应为 (node_list, record)
     start_nodes = source[0]
     start_record = source[1] if len(source) > 1 else None
-    if start_nodes[-1] not in G:
-        raise nx.NodeNotFound(f"Source {start_nodes[-1]} not in G")
     
-    seen[start_nodes[-1]] = 0
-    push(fringe, (0, next(c), (start_nodes, start_record, [])))  # (path, record, used_contigs)
+    start_node = start_nodes[-1]
+    if start_node not in G:
+        raise nx.NodeNotFound(f"Source {start_node} not in G")
+    
+    # 路径长度 (Length): 初始路径长度为 0
+    start_length = len(start_nodes) - 1 if start_nodes else 0
+    
+    # Min-Max Cost: 源点到自身的瓶颈 Cost 为 0
+    start_cost = 0 
+    seen[start_node] = (start_cost, start_length)
+    
+    # 优先队列元素格式: (MinMax_Cost, Length, Tie_Breaker, (Path, Record, Used_Contigs))
+    push(fringe, (start_cost, start_length, next(c), (start_nodes, start_record, [])))
 
     while fringe:
-        (d, _, (v, cur_record, used_contigs)) = pop(fringe)
+        (d, length, _, (v, cur_record, used_contigs)) = pop(fringe)
+        
+        # v[-1] 是当前路径的终点节点
         if v[-1] in dist:
             continue
+            
+        # 确认 Min-Max 路径
         dist[v[-1]] = d
 
         if v[-1] == target:
@@ -1664,54 +1684,87 @@ def _dijkstra_multisource(G, path_dict: dict, SEQS, source, weight, pred=None, p
             target_info = (v, cur_record, used_contigs)
             break
 
+        # ----------------------------------------------------
+        # 1. 松弛操作：尝试走 contig path (Contig-Path-Contig)
+        # ----------------------------------------------------
         through_contig = False
-        # 尝试走 contig path
-        for u, e in G_succ[v[-1]].items():
-            if u in path_dict[0]:
-                for record in path_dict[0][u]:
+        for u_start_node, e in G_succ[v[-1]].items():
+            if u_start_node in path_dict[0]:
+                for record in path_dict[0][u_start_node]:
                     u_path, u_contig_name, u_score, u_pre_contig, u_vec = record
                     if u_pre_contig is not None:
                         continue
                     if all(node in node_set for node in u_path):
                         through_contig = True
-                        if cur_record is not None:
-                            v_score, v_vec = cur_record
-                        else:
-                            v_score, v_vec = G.nodes[v[0]]['score'], G.nodes[v[0]]['freq_vec']
-                        cost = get_edge_cost(G, v, [u] + u_path, v_score, u_score, v_vec, u_vec, max_k_val)
-                        vu_dist = min(dist[v[-1]], cost)
+                        
+                        # 获取节点评分/向量信息
+                        v_score, v_vec = cur_record if cur_record is not None else (G.nodes[v[0]]['score'], G.nodes[v[0]]['freq_vec'])
+                        
+                        # 边 (v, Contig Path) 的 Cost (瓶颈权重)
+                        cost = get_edge_cost(G, v, [u_start_node] + u_path, v_score, u_score, v_vec, u_vec, max_k_val)
+                        
+                        # **Min-Max 松弛规则**
+                        vu_dist = max(dist[v[-1]], cost) 
+                        
+                        # 新路径长度 (每经过一个 Contig 视为增加一个边)
+                        new_length = length + len(u_path) 
+                        
+                        u_end_node = u_path[-1] # Contig Path 的终点
 
-                        if u_path[-1] in dist:
-                            if vu_dist < dist[u_path[-1]]:
-                                raise ValueError('Contradictory paths found: negative weights?')
-                        elif u_path[-1] not in seen or vu_dist < seen[u_path[-1]]:
-                            seen[u_path[-1]] = vu_dist
-                            new_contigs = used_contigs + [u_contig_name]  # ← 记录 contig
-                            push(fringe, (vu_dist, next(c), ([u] + u_path, [u_score, u_vec], new_contigs)))
+                        # 获取目标节点当前的 Min-Max 信息
+                        current_minmax_cost, current_length = seen.get(u_end_node, (float('inf'), float('inf')))
+
+                        # 比较规则: 
+                        # 1. 新的 Min-Max 权重必须更小 (vu_dist < current_minmax_cost)
+                        # 2. 如果 Min-Max 权重相同，新的路径必须更短 (vu_dist == current_minmax_cost AND new_length < current_length)
+                        if vu_dist < current_minmax_cost or \
+                           (vu_dist == current_minmax_cost and new_length < current_length):
+                            
+                            # 更新 seen 和 priority queue
+                            seen[u_end_node] = (vu_dist, new_length)
+                            new_contigs = used_contigs + [u_contig_name]
+                            
+                            # 将 length 作为第二个排序元素 (最小化)
+                            push(fringe, (vu_dist, new_length, next(c), (u_path, [u_score, u_vec], new_contigs)))
+                            
                             if paths is not None:
-                                paths[u_path[-1]] = paths.get(v[-1], v) + [u] + u_path
+                                paths[u_end_node] = paths.get(v[-1], v) + [u_start_node] + u_path
 
-        # 如果没走 contig，走普通边
+
+        # ----------------------------------------------------
+        # 2. 松弛操作：走普通边 (Contig-Contig)
+        # ----------------------------------------------------
         if not through_contig:
             for u, e in G_succ[v[-1]].items():
                 u_score, u_vec = G.nodes[u]['score'], G.nodes[u]['freq_vec']
-                if cur_record is not None:
-                    v_score, v_vec = cur_record
-                else:
-                    v_score, v_vec = G.nodes[v[0]]['score'], G.nodes[v[0]]['freq_vec']
+                v_score, v_vec = cur_record if cur_record is not None else (G.nodes[v[0]]['score'], G.nodes[v[0]]['freq_vec'])
+                
+                # 边 (v, u) 的 Cost (瓶颈权重)
                 cost = get_edge_cost(G, v, [u], v_score, u_score, v_vec, u_vec, max_k_val)
-                vu_dist = min(dist[v[-1]], cost)
+                
+                # **Min-Max 松弛规则**
+                vu_dist = max(dist[v[-1]], cost) 
+                
+                
+                # 新路径长度
+                new_length = length + 1
 
-                if u in dist:
-                    if vu_dist < dist[u]:
-                        raise ValueError('Contradictory paths found: negative weights?')
-                elif u not in seen or vu_dist < seen[u]:
-                    seen[u] = vu_dist
-                    push(fringe, (vu_dist, next(c), ([u], None, used_contigs)))  # contig list unchanged
+                # 获取目标节点当前的 Min-Max 信息
+                current_minmax_cost, current_length = seen.get(u, (float('inf'), float('inf')))
+                
+                # 比较规则 (同 Contig Path 比较)
+                if vu_dist < current_minmax_cost or \
+                   (vu_dist == current_minmax_cost and new_length < current_length):
+                    
+                    # 更新 seen 和 priority queue
+                    seen[u] = (vu_dist, new_length)
+                    push(fringe, (vu_dist, new_length, next(c), ([u], None, used_contigs)))
+                    
                     if paths is not None:
                         paths[u] = paths.get(v[-1], v) + [u]
 
     else:
+        # 如果循环结束仍未找到目标
         raise nx.NetworkXNoPath(f"No path between {source[0]} and {target}.")
 
     finaldist = dist[target]
