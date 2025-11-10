@@ -154,7 +154,7 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
     #     logger.info(f"{key}\t {path_dict[key]}\n")
 
     # add a score to every node
-    get_node_freq_vec(G)
+    get_node_freq_vec(G,SEQS)
     if use_scores:
         get_node_scores(scores_file,G)
 

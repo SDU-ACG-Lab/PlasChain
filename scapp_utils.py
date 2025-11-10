@@ -55,11 +55,11 @@ def readfq(fp): # this is a generator function
                 yield name, seq, None # yield a fasta record instead
                 break
 
-def get_node_freq_vec(G):
+def get_node_freq_vec(G,SEQs):
     """ Annotate each node in the graph with its frequency vector
     """
     for nd in G.nodes():
-        vec = contig_to_freq_vector(nd)
+        vec = contig_to_freq_vector(SEQs[nd])
         G.add_node(nd, freq_vec=vec)
 def get_node_scores(scores_file,G):
     """ Write the plasmid scores into each node in the graph
@@ -293,13 +293,24 @@ def get_path_mean_std(path, G, seqs, max_k_val=77,discount=True):
     std = np.sqrt(np.dot(wgts,(covs-mean)**2))
     return (mean,std)
 
+def get_path_min_std(path, G, seqs, max_k_val=77,discount=True):
+    covs = np.array(get_path_covs(path,G,discount))
+    wgts = np.array([(get_length_from_spades_name(n)-max_k_val) for n in path])
+    tot_len = len(get_seq_from_path(path, seqs, max_k_val, cycle=True))
+    if tot_len<=0: return (0,0)
+    wgts = np.multiply(wgts, 1./tot_len)
+    mean = np.average(covs, weights = wgts)
+    std = np.sqrt(np.dot(wgts,(covs-mean)**2))
+    min_cov = min(covs)
+    return (min_cov,std)
+
 def update_path_coverage_vals(path, G, seqs, max_k_val=77,):
-    mean, _ = get_path_mean_std(path, G, seqs, max_k_val) ## NOTE: CAN WE STILL GUARANTEE CONVERGENCE WHEN DISCOUNTING COVERAGE ??!
+    min_cov, _ = get_path_min_std(path, G, seqs, max_k_val) ## NOTE: CAN WE STILL GUARANTEE CONVERGENCE WHEN DISCOUNTING COVERAGE ??!
     covs = get_path_covs(path,G)
     # 如果 repeat的discount_cov过低会拉低整体的mean,此时剥离一个cycle时，不一定能去掉(打断)一个环，不能保证收敛，
     # 后续寻找cycle时，这些cov几近为0但score很高的node会提供错误的信息，误导cycle的寻找
     new_covs = []
-    mean = max(mean, min(covs)) if covs else mean
+    # mean = max(mean, min(covs)) if covs else mean
     # 对于多次出现的节点，理应将其折算的部分加进去
     # 如 A(10), B(24), C(10), B'(24)
     # 计算mean时会对相同节点进行折算：
@@ -312,10 +323,18 @@ def update_path_coverage_vals(path, G, seqs, max_k_val=77,):
         p = path[i]
         pos_name = p if (p[-1]!="'") else p[:-1]
         if cnts[pos_name] > 1:
-            new_covs.append(covs[i]- mean*cnts[pos_name])
+            min_cov = min(min_cov, covs[i]/cnts[pos_name])
         else:
-            new_covs.append(covs[i]-mean)
-    logger.info("Path: %s \nMean: %s Covs: %s" % (str(path),str(mean),str(covs) ))
+            min_cov = min(min_cov, covs[i])
+
+    for i in range(len(path)):
+        p = path[i]
+        pos_name = p if (p[-1]!="'") else p[:-1]
+        if cnts[pos_name] > 1:
+            new_covs.append(covs[i]- min_cov*cnts[pos_name])
+        else:
+            new_covs.append(covs[i]-min_cov)
+    logger.info("Path: %s \Min: %s Covs: %s" % (str(path),str(min_cov),str(covs) ))
     logger.info("NewCovs: %s" % (str(new_covs)))
     for i in range(len(path)):
         if new_covs[i] > 0:
@@ -790,11 +809,12 @@ def enum_high_mass_shortest_paths(G, pool,path_dict,SEQS, use_scores=False, use_
     #        G.add_edge(e[0], e[1], cost = get_edge_cost(G, e[0], e[1], G.nodes[e[0]]['score'], G.nodes[e[1]]['score'],G.nodes[e[0]]['freq_vec'], G.nodes[e[1]]['freq_vec'],max_k=max_k))
     #     else:
     #         G.add_edge(e[0], e[1], cost = (1./get_spades_base_mass(G, e[1])))
-
+    valid_path_starts = set(path_dict[0].keys())
     logger.info("Getting shortest paths")
-    nodes = [n for n in G.nodes() if get_length_from_spades_name(n) >= 1000 \
-             or n in path_dict[0].keys()\
-             or G.nodes[n].get('gene', False) is True]
+    nodes = [n for n in G.nodes() if get_cov_from_spades_name_and_graph(n,G) >= 1 and (get_length_from_spades_name(n) >= 1000 \
+             or n in valid_path_starts\
+             or G.nodes[n].get('gene', False) is True)
+            ]
     paths_list = []
     if pool._processes > 1 and pool._processes <= 2*len(nodes): # otherwise, run single threaded
         paths_list=Manager().list()
@@ -816,7 +836,7 @@ def enum_high_mass_shortest_paths(G, pool,path_dict,SEQS, use_scores=False, use_
         # and comparing against the set already stored
         if unoriented_sorted_path_str not in unq_sorted_paths:
             unq_sorted_paths.add(unoriented_sorted_path_str)
-            paths.append(tuple((path,weight,use_contig)))
+            paths.append((path,weight,use_contig))
 
     return paths
 
@@ -1040,7 +1060,7 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, pool, path_dict,
 
                 seen_unoriented_paths.add(get_unoriented_sorted_str(path))
                 # 通过原图G,计算 mean coverage
-                before_cov, _ = get_path_mean_std(path, G, SEQS, max_k)
+                before_cov, _ = get_path_min_std(path, G, SEQS, max_k)
                 # 返回path中的节点更新后的coverage
                 covs = update_path_coverage_vals(path, G, SEQS, max_k)
                 # COMP 利用上述coverage更新自己的coverage
@@ -1103,7 +1123,7 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, pool, path_dict,
                     else: i += 1
 
                 seen_unoriented_paths.add(get_unoriented_sorted_str(path))
-                before_cov, _ = get_path_mean_std(path, G, SEQS, max_k)
+                before_cov, _ = get_path_min_std(path, G, SEQS, max_k)
                 covs = update_path_coverage_vals(path, G, SEQS, max_k)
                 update_path_with_covs(path, COMP, covs)
                 path_count += 1
@@ -1130,7 +1150,6 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, pool, path_dict,
 
         last_node_count = len(COMP.nodes())
         last_path_count = path_count
-
         # make tuples of (CV, path)
         path_tuples = []
         path_tuples_with_contig = []
@@ -1141,9 +1160,8 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, pool, path_dict,
                 seen_unoriented_paths.add(get_unoriented_sorted_str(p))
                 # logger.info("Num seen paths: %d" % (len(seen_unoriented_paths)))
                 continue
-            if use_contig is not None:
-                if len(use_contig) > 0:
-                    path_tuples_with_contig.append((get_wgtd_path_coverage_CV(p,G,SEQS,max_k_val=max_k), p,length,use_contig))
+            if use_contig:
+                path_tuples_with_contig.append((get_wgtd_path_coverage_CV(p,G,SEQS,max_k_val=max_k), p,length,use_contig))
             else:
                 path_tuples_without_contig.append((get_wgtd_path_coverage_CV(p,G,SEQS,max_k_val=max_k), p,length,use_contig))
             
@@ -1158,9 +1176,9 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, pool, path_dict,
         # 使用了contig path的优先，低CV作为第二排序依据
         path_tuples.sort(key=lambda item: item[0])
 
-        # logger.info("candidate path:")
-        # for cv,p,weight,use_contig in path_tuples:
-        #     logger.info(f"\tpath: {p}, CV: {cv}, weight: {weight},use_contig: {use_contig} \n")
+        logger.info("candidate path:")
+        for cv,p,weight,use_contig in path_tuples:
+            logger.info(f"\tpath: {p}, CV: {cv}, weight: {weight},use_contig: {use_contig} \n")
 
         for pt in path_tuples:
             curr_path = pt[1]
@@ -1175,8 +1193,7 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, pool, path_dict,
                     logger.info("Added path %s" % ", ".join(curr_path))
                     logger.info("\tCV: %4f" % curr_path_CV)
                     seen_unoriented_paths.add(get_unoriented_sorted_str(curr_path))
-                    #before_cov, _ = get_path_mean_std(curr_path, COMP, SEQS, max_k)
-                    before_cov, _ = get_path_mean_std(curr_path, G, SEQS, max_k)
+                    before_cov, _ = get_path_min_std(curr_path, G, SEQS, max_k)
                     covs = update_path_coverage_vals(curr_path, G, SEQS, max_k)
                     update_path_with_covs(curr_path, COMP, covs)
                     path_count += 1
@@ -1450,7 +1467,7 @@ def get_contig_path(path_file,id_dict,SEQS,G,contig_path_file,score_out_file,min
                     while(len(path_list) and path_list[0] == path_list[-1]):
                         path_list = path_list[:-1]
 
-                    if len(path_list) < min_contig_path_len:
+                    if len(path_list) < min_contig_path_len or get_total_len_from_path(path_list,max_k) < 10000:
                         continue
 
                     # 自定义的contig path的唯一标识
@@ -1704,7 +1721,8 @@ def _dijkstra_multisource(G, path_dict: dict, SEQS, source, weight, pred=None, p
                         cost = get_edge_cost(G, v, [u_start_node] + u_path, v_score, u_score, v_vec, u_vec, max_k_val)
                         
                         # **Min-Max 松弛规则**
-                        vu_dist = max(dist[v[-1]], cost) 
+                        # vu_dist = max(dist[v[-1]], cost) 
+                        vu_dist = dist[v[-1]] + cost
                         
                         # 新路径长度 (每经过一个 Contig 视为增加一个边)
                         new_length = length + len(u_path) 
@@ -1743,8 +1761,8 @@ def _dijkstra_multisource(G, path_dict: dict, SEQS, source, weight, pred=None, p
                 cost = get_edge_cost(G, v, [u], v_score, u_score, v_vec, u_vec, max_k_val)
                 
                 # **Min-Max 松弛规则**
-                vu_dist = max(dist[v[-1]], cost) 
-                
+                # vu_dist = max(dist[v[-1]], cost) 
+                vu_dist = dist[v[-1]] + cost
                 
                 # 新路径长度
                 new_length = length + 1
