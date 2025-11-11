@@ -178,6 +178,7 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
         print(" ")
         if len(seq)>=min_length:
             f_cycs_fasta.write(">" + name + "\n" + seq + "\n")
+            f_before_cyc_fasta.write(">" + name + "\n" +seq + "\n")
             f_long_self_loops.write(">" + name + "\n" + seq + "\n")
             f_cyc_paths.write(name + "\n" +str(nd[0])+ "\n" +
              str(get_num_from_spades_name(nd[0])) + "\n")

@@ -345,7 +345,7 @@ def update_path_coverage_vals(path, G, seqs, max_k_val=77,):
 
 def update_path_with_covs(path, G, covs):
     for i in range(len(path)):
-        if covs[i] > 0:
+        if covs[i] >= 1:
             update_node_coverage(G,path[i],covs[i])
         else:
             update_node_coverage(G,path[i],0)
@@ -1160,10 +1160,12 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, pool, path_dict,
                 seen_unoriented_paths.add(get_unoriented_sorted_str(p))
                 # logger.info("Num seen paths: %d" % (len(seen_unoriented_paths)))
                 continue
+            CV = get_wgtd_path_coverage_CV(p,G,SEQS,max_k_val=max_k)
+            if CV > max_CV:continue
             if use_contig:
-                path_tuples_with_contig.append((get_wgtd_path_coverage_CV(p,G,SEQS,max_k_val=max_k), p,length,use_contig))
+                path_tuples_with_contig.append((CV, p,length,use_contig))
             else:
-                path_tuples_without_contig.append((get_wgtd_path_coverage_CV(p,G,SEQS,max_k_val=max_k), p,length,use_contig))
+                path_tuples_without_contig.append((CV, p,length,use_contig))
             
         if(len(path_tuples_with_contig) > 0):
             path_tuples = path_tuples_with_contig
