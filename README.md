@@ -19,12 +19,6 @@ PlasChain: an algorithm for improving long plasmid reconstruction from metagenom
 
 #### With environment yaml file
 
-Alternatively, you can install PlasChain as a conda package:
-Download the installation file `environment.yaml` in the desired folder. For example:
-````
-wget https://github.com/SDU-ACG-Lab/PlasChain/blob/Optimize-Merging-cycle/environment.yaml
-````
-
 Create and activate the conda environment:
 ```
 conda env create -f environment.yaml
