@@ -786,13 +786,13 @@ def enum_high_mass_shortest_paths(G, pool,path_dict,SEQS, use_scores=False, use_
 
     # use add_edge to assign edge weights to be 1/mass of starting node
     # TODO: only calculate these if they haven't been/need to be updated
-    # for e in G.edges():
-    #     if use_genes and G.nodes[e[1]]['gene'] == True:
-    #         G.add_edge(e[0], e[1], cost = 0.0)
-    #     elif use_scores==True:
-    #        G.add_edge(e[0], e[1], cost = get_edge_cost(G, e[0], e[1], G.nodes[e[0]]['score'], G.nodes[e[1]]['score'],G.nodes[e[0]]['freq_vec'], G.nodes[e[1]]['freq_vec'],max_k=max_k))
-    #     else:
-    #         G.add_edge(e[0], e[1], cost = (1./get_spades_base_mass(G, e[1])))
+    for e in G.edges():
+        if use_genes and G.nodes[e[1]]['gene'] == True:
+            G.add_edge(e[0], e[1], cost = 0.0)
+        elif use_scores==True:
+           G.add_edge(e[0], e[1], cost = get_edge_cost(G, e[0], e[1], G.nodes[e[0]]['score'], G.nodes[e[1]]['score'],G.nodes[e[0]]['freq_vec'], G.nodes[e[1]]['freq_vec'],max_k=max_k))
+        else:
+            G.add_edge(e[0], e[1], cost = (1./get_spades_base_mass(G, e[1])))
     valid_path_starts = set(path_dict[0].keys())
     logger.info("Getting shortest paths")
     nodes = [n for n in G.nodes() if get_cov_from_spades_name_and_graph(n,G) >= 1 and (get_length_from_spades_name(n) >= 1000 \
@@ -833,13 +833,13 @@ def get_high_mass_shortest_path(node,G,path_dict,SEQS,use_scores,use_genes,max_k
     # TODO: potentially add check for unique paths so that don't check same cycle
     # twice if there are two potential plasmid nodes in it
 
-    # for e in G.edges():
-    #     if use_genes and G.nodes[e[1]]['gene'] == True:
-    #         G.add_edge(e[0], e[1], cost = 0.0)
-    #     elif use_scores == True:
-    #         G.add_edge(e[0], e[1], cost = get_edge_cost(G, e[0], e[1], G.nodes[e[0]]['score'], G.nodes[e[1]]['score'],G.nodes[e[0]]['freq_vec'], G.nodes[e[1]]['freq_vec'],max_k=max_k))
-    #     else:
-    #         G.add_edge(e[0], e[1], cost = (1./get_spades_base_mass(G, e[1])))
+    for e in G.edges():
+        if use_genes and G.nodes[e[1]]['gene'] == True:
+            G.add_edge(e[0], e[1], cost = 0.0)
+        elif use_scores == True:
+            G.add_edge(e[0], e[1], cost = get_edge_cost(G, e[0], e[1], G.nodes[e[0]]['score'], G.nodes[e[1]]['score'],G.nodes[e[0]]['freq_vec'], G.nodes[e[1]]['freq_vec'],max_k=max_k))
+        else:
+            G.add_edge(e[0], e[1], cost = (1./get_spades_base_mass(G, e[1])))
 
     shortest_score = float("inf")
     path = None
@@ -1190,6 +1190,7 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, pool, path_dict,
                     logger.info("Did not add path: %s" % (", ".join(curr_path)))
                     logger.info("\tCV: %4f" % curr_path_CV)
                     if curr_path_CV > max_CV:
+                        #TODO if there is contig path tuples, we can continue to precess normal tuples(more time-consuming ,more FP and more TP)
                         break # sorted by CV
                     else: # not good mate pairs
                         seen_unoriented_paths.add(get_unoriented_sorted_str(curr_path))
@@ -1749,7 +1750,7 @@ def _dijkstra_multisource(G, path_dict: dict, SEQS, source, weight, pred=None, p
                 v_score, v_vec = cur_record if cur_record is not None else (G.nodes[v[0]]['score'], G.nodes[v[0]]['freq_vec'])
                 
                 # 边 (v, u) 的 Cost (瓶颈权重)
-                cost = get_edge_cost(G, v, [u], v_score, u_score, v_vec, u_vec, max_k_val)
+                cost = get_edge_cost_from_graph(G, v, [u], v_score, u_score, v_vec, u_vec, max_k_val)
                 
                 # **Min-Max 松弛规则**
                 # vu_dist = max(dist[v[-1]], cost) 
@@ -2013,3 +2014,11 @@ def remove_tail_self_loop(path):
             return path[:-overlap_len]
     
     return path
+
+def get_edge_cost_from_graph(G, from_path, to_path, from_score, to_score, from_vec, to_vec, max_k_val):
+    # normal edge
+    if(len(from_path) == 1 and len(to_path) == 1):
+        return G[from_path[0]][to_path[0]]['cost']
+    # through contig path
+    else:
+        return get_edge_cost(G, from_path, to_path, from_score, to_score, from_vec, to_vec, max_k_val)
