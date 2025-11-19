@@ -54,11 +54,11 @@ It may take a few minutes, depending on your device's performance.
 ## Basic Usage
 To run the PlasChain pipeline: 
 ```
-python scapp.py -g <fastg graph> -o <output directory> [-k <max k value>] -r1 <reads 1> -r2 <reads 2> -path <contig path file> -db <platon db> [-p <num processes>]
+python plaschain.py -g <fastg graph> -o <output directory> [-k <max k value>] -r1 <reads 1> -r2 <reads 2> -path <contig path file> -db <platon db> [-p <num processes>]
 ```
 If a BAM alignment file of the reads to the assembly graph already exists, then use the following command to avoid re-running the alignment:
 ```
-python scapp.py -g <fastg graph> -o <output directory> [-k <max k value>] -b <BAM file> -path <contig path file> -db <platon db>  [-p <num processes>]
+python plaschain.py -g <fastg graph> -o <output directory> [-k <max k value>] -b <BAM file> -path <contig path file> -db <platon db>  [-p <num processes>]
 ```
 The common command line options are:
 
@@ -105,7 +105,7 @@ There are some files in `intermediate_files` directory
   
 - `reads_pe_primary.sort.bam(.bai)` is the alignment file for the reads to the assembly graph. It can be re-used with the `-b` option if PlasChain is re-run on the same sample.
 
-Under the `logs` subdirectory, the file `scapp.log` contains all information about the PlasChain run. Other log files in the `logs` subdirectory may be helpful if there is an error or failure in one of the stages that runs BLAST, BWA, or PlasClass.
+Under the `logs` subdirectory, the file `plaschain.log` contains all information about the PlasChain run. Other log files in the `logs` subdirectory may be helpful if there is an error or failure in one of the stages that runs BLAST, BWA, or PlasClass.
 
 ## Advanced usage
 More advanced command line options allow for different stages in the PlasChain pipeline to be modified:
