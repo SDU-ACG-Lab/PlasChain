@@ -7,14 +7,14 @@ import multiprocessing as mp
 import pysam
 
 
-from scapp_utils import *
+from plaschain_utils import *
 
 import PARAMS
 
 def parse_user_input():
     parser = argparse.ArgumentParser(
         description=
-        'SCAPP extracts likely plasmids (and other circular DNA elements) from de novo assembly graphs'
+        'PlasChain extracts likely plasmids (and other circular DNA elements) from de novo assembly graphs'
         )
     parser.add_argument('-g','--graph',
      help='(spades 3.50+) assembly graph FASTG file to process; recommended for spades 3.5: before_rr.fastg, for spades 3.6+:assembly_graph.fastg',
@@ -106,10 +106,10 @@ def parse_user_input():
 
     return parser.parse_args()
 
-def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
+def run_plaschain(fastg, outdir, bampath, num_procs, max_k, \
                     genes_file, use_genes, scores_file, use_scores, path_file,\
                     max_CV, min_length,min_contig_path_len, ISO=False):
-    ''' Run SCAPP'''
+    ''' Run PlasChain'''
 
     logger = logging.getLogger("scapp_logger")
 
@@ -312,11 +312,11 @@ def main():
         PARAMS.GOOD_CYC_DOMINATED_THRESH = args.good_cyc_dominated_thresh
 
     # Set up logging and write config and options to the log file
-    logfile = os.path.join(args.output_dir,"scapp.log")
+    logfile = os.path.join(args.output_dir,"plaschain.log")
     logging.basicConfig(filemode='w', filename=logfile, level=logging.INFO, format='%(asctime)s: %(message)s', datefmt='%d/%m/%Y %H:%M')
     logger = logging.getLogger("scapp_logger")
 
-    run_scapp(fastg, args.output_dir, bampath, num_procs, max_k, \
+    run_plaschain(fastg, args.output_dir, bampath, num_procs, max_k, \
                     args.gene_hits, use_genes, args.scores, use_scores,path_file, \
                     PARAMS.MAX_CV, min_length,min_contig_path_len,ISO)
 
