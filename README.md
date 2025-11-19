@@ -86,8 +86,6 @@ The output files are written in the directory specified by the user:
 The file `<prefix>.confident_cycs.fasta` contains the assembled plasmid sequences. The `<prefix> `is derived from the input filename provided via the `-g` parameter, with the `.fastg` extension removed.
 
 There are some files in `intermediate_files` directory 
-
-- `<prefix>.before.merge.cycs.fasta` is a fasta file of **all** cyclic paths that were considered as potential plasmids before merging cycle step, which can be used for analyse the peformance of merging cycle step.
   
 - `<prefix>.cycs.fasta` is a fasta file of **all** cyclic paths that were considered as potential plasmids before filtering to create the subset that is output.
   
