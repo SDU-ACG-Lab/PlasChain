@@ -1817,51 +1817,66 @@ def get_total_len_from_path(path, max_k_val, cycle=False):
     return total_len
 
 
-def add_contig_to_path_dict(G,scores_dict, path_dict, contigs_path_name_dict,node_to_contig, use_genes=True, use_scores=True):
+def add_contig_to_path_dict(
+    G, scores_dict, path_dict, contigs_path_name_dict,
+    node_to_contig, use_genes=True, use_scores=True
+):
+    # Step 1: 预计算每个 contig 中节点的位置
+    proxy_contig_dict = {}
+    contig_node_to_index = {}
+    for contig_id, (path, _) in contigs_path_name_dict.items():
+        contig_node_to_index[contig_id] = {node: i for i, node in enumerate(path)}
 
-    # 对于处在contig path中间的 gene hit node 或 hi conf node, 单独新增一些记录：如 3 为 hi conf node
-    # 之前存储过cotig path : {key: 1, value: ([2 3 4 5 6],contig_name, score, None) }   
-    # 现在新增记录: {key: 3, value:([4 ,5 ,6], contig_name, score, [1, 2])} 
-    # 新纪录用于将通过hi conf node的 contig path 完整利用起来，如以3为起点寻找最短路径，则可以直接找 6 - > 1的最短路径，再拼上整条路径
+    # Step 2: 确定高置信节点
     plasmid_nodes = set()
-
-    # Determine plasmid nodes based on genes and scores
     if use_genes:
-        gene_hit_nodes = get_plasmid_gene_nodes(G)  
-        plasmid_nodes.update(gene_hit_nodes)
+        plasmid_nodes.update(get_plasmid_gene_nodes(G))
     if use_scores:
-        hi_conf_nodes = get_hi_conf_plasmids(G)
-        plasmid_nodes.update(hi_conf_nodes)
+        plasmid_nodes.update(get_hi_conf_plasmids(G))
 
+    # Step 3: 遍历每个高置信节点
     for node in plasmid_nodes:
-        if node not in node_to_contig.keys():
-            logger.info(f"hi conf node: {node} not in contig path")
-            #node not in contig path
+        if node not in node_to_contig:
             continue
-        for contig_id in node_to_contig[node]:
-            # 对于gene hit node 和 hi conf node， 使用单项dijstra,因此无需考虑反向序列
-            if contig_id.startswith('R'):
-                continue
-            # 通过contig name 获取 该node所在的path
-            path, freq_vec = contigs_path_name_dict[contig_id]
-            if node in path:  # Ensure the node is in the path before indexing
-                start_index = path.index(node)
 
-                # 如果该节点已经位于开头或者末尾，则无需新增path
-                # TODO 尾部可能需要单独处理
-                if start_index == len(path)-1 or start_index == 0 :
-                    continue
-                contig_path1 = path[start_index:]
-                contig_path2 = path[:start_index]
-                logger.info(f"hi conf node: {node}")
-                # use the full contig score
-                score = scores_dict[contig_id]
-                # Path dont store the fisrt node
-                # if score >= 0.5:
-                path_dict[0].setdefault(contig_path1[0], []).append((contig_path1[1:], contig_id, score,contig_path2, freq_vec))
-                logger.info(f"add contig path: {contig_path1[0]} {str(contig_path1[1:])}, score =  {score}, id={contig_id}")
-                logger.info(f"It's pre contig is {contig_path2}")
-            
+        for contig_id in node_to_contig[node]:
+            if contig_id.startswith('R'):  # skip reverse
+                continue
+
+            # 快速获取该 node 在 contig 中的位置
+            node_index_map = contig_node_to_index.get(contig_id)
+            if node_index_map is None or node not in node_index_map:
+                continue
+
+            start_index = node_index_map[node]
+            path, freq_vec = contigs_path_name_dict[contig_id]
+
+            # Skip if at boundary
+            if start_index == 0 or start_index == len(path) - 1:
+                continue
+
+            # Split path
+            contig_path1 = path[start_index:]      # [node, ..., end]
+            contig_path2 = path[:start_index]      # [start, ..., prev]
+
+            score = scores_dict.get(contig_id)
+            if score is None:
+                continue
+
+            # Store: key = first node of suffix path
+            suffix_start = contig_path1[0]
+            suffix_body = contig_path1[1:]  # exclude first node
+
+            proxy_contig_dict.setdefault(suffix_start, []).append(
+                (suffix_body, contig_id, score, contig_path2, freq_vec)
+            )
+
+            #     logger.info(f"hi conf node: {node}")
+            #     logger.info(f"add contig path: start={suffix_start}, body={suffix_body}, "
+            #                 f"score={score}, id={contig_id}, pre={contig_path2}")    
+    return proxy_contig_dict 
+        
+             
 def remove_dead_ends(G):
 
     """

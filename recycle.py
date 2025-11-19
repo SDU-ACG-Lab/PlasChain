@@ -163,7 +163,7 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
         get_gene_nodes(genes_file,G)
 
     # add contig path with hi conf node as fisrt node
-    add_contig_to_path_dict(G,scores_dict,path_dict,contigs_path_name_dict,node_to_contig,use_genes,use_scores)
+    proxy_contig_dict =  add_contig_to_path_dict(G,scores_dict,path_dict,contigs_path_name_dict,node_to_contig,use_genes,use_scores)
     # gets set of long simple loops, removes short
     # simple loops from graph
     long_self_loops = get_long_self_loops(G, min_length, SEQS, bamfile, use_scores, use_genes, max_k)
