@@ -119,9 +119,7 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
     loop_ofile = os.path.join(outdir,basename+".self_loops.fasta")
     contig_path_ofile = os.path.join(outdir,basename+".contig.fasta")
     contig_path_score_ofile = os.path.join(outdir,basename+".contig.score.fasta")
-    before_merge_path_ofile = os.path.join(outdir,basename+".before.cycs.fasta")
-    
-    f_before_cyc_fasta = open(before_merge_path_ofile,'w')
+
     f_cycs_fasta = open(fasta_ofile, 'w') # output 1 - fasta of sequences
     f_cyc_paths = open(cycs_ofile, 'w') # output 2 - file containing path name (corr. to fasta),
     f_long_self_loops = open(loop_ofile,'w') # output 3 - file of self-loop fasta sequences
@@ -143,11 +141,13 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
     
     print(f"get contig path which is longer than {min_contig_path_len}")
     path_dict,contigs_path_name_dict, node_to_contig, scores_dict= get_contig_path(path_file, id_to_fullname,SEQS,original_comp,contig_path_ofile,contig_path_score_ofile,min_contig_path_len=min_contig_path_len,max_k=max_k,num_procs=num_procs)
-
+    print(f"get valid PE support...")
+    st = time.time()
     mean, std = estimate_insert_size_distribution(bamfile)
     pe_contigs_path_dict, valid_pairs = get_pe_support_evidence(G, bamfile, mean, std, max_k)
     pe_support_dict = build_pe_support_dict(pe_contigs_path_dict)
     G.graph['pe_support_data'] = pe_support_dict
+    logger.info(f"get valid PE support consuming {time.time() - st} s")
 
     # logger.info("path_dict:\n")
     # for key in path_dict.keys():
@@ -178,7 +178,6 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
         print(" ")
         if len(seq)>=min_length:
             f_cycs_fasta.write(">" + name + "\n" + seq + "\n")
-            f_before_cyc_fasta.write(">" + name + "\n" +seq + "\n")
             f_long_self_loops.write(">" + name + "\n" + seq + "\n")
             f_cyc_paths.write(name + "\n" +str(nd[0])+ "\n" +
              str(get_num_from_spades_name(nd[0])) + "\n")
@@ -225,7 +224,8 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
         for node in c.nodes():
              # 如果节点已经被访问，说明其对应的反向互补的强连通分支已经处理过，直接退出当前循环
              if node in VISITED_NODES:
-                # logger.info(f"{node} had been visited ,pass {processed_comps}/ {all_comps}")
+                logger.info(f"{node} had been visited ,pass {processed_comps}/ {all_comps}")
+                print(f"{processed_comps}/ {all_comps} have been processed...")
                 redundant = True
                 break
         if redundant:
@@ -242,7 +242,8 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
         VISITED_NODES.update(rc_nodes)
         # 核心函数
         # 参数的前三个， COMP当前强连通分支， G原图，用于计算原图(包含dead end)中的discounted coverage
-        path_set, merge_time,path_set_before_merge = process_component(COMP, G ,max_k, min_length, max_CV, SEQS, pool, path_dict,node_to_contig,contigs_path_name_dict,valid_pairs,use_scores, use_genes, num_procs)
+        path_set, merge_time = process_component(COMP, G ,max_k, min_length, max_CV, SEQS, pool, path_dict,node_to_contig,contigs_path_name_dict,valid_pairs,use_scores, use_genes, num_procs)
+
         merge_cost+=merge_time
         for p in path_set:
             name = get_spades_type_name(path_count, p[0], SEQS, max_k, G, p[1])
@@ -254,16 +255,8 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
                 f_cyc_paths.write(name + "\n" +str(p[0])+ "\n" +
                  str([get_num_from_spades_name(n) for n in p[0]]) + "\n")
             path_count += 1
-
-        for p in path_set_before_merge:
-            name = get_spades_type_name(before_merge_path_count, p[0], SEQS, max_k, G, p[1])
-            seq = get_seq_from_path(p[0], SEQS, max_k_val=max_k)
-            # print(p[0])
-            # print(" ")
-            if len(seq)>=min_length:
-                f_before_cyc_fasta.write(">" + name + "\n" + seq + "\n")
-            before_merge_path_count += 1
         logger.info(f"{processed_comps}/ {all_comps} have been processed...")
+        print(f"{processed_comps}/ {all_comps} have been processed...")
     logger.info(f"merge cycle consumes {merge_cost} seconds")
     pool.close()
     pool.join()

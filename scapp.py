@@ -372,153 +372,154 @@ def main():
 
     basename, _ = os.path.splitext(os.path.basename(fastg))
     fasta_ofile = os.path.join(int_dir,basename+'.cycs.fasta')
-    before_ofile = os.path.join(int_dir,basename+'.before.cycs.fasta')
     self_loops_ofile = os.path.join(int_dir,basename+'.self_loops.fasta')
-    for basename, fasta_ofile in [("assembly_graph", fasta_ofile), ("assembly_graph.before", before_ofile)]:
-        # Step 5: Post-process filtering: BLAST output plasmids for plasmid-specific genes
-        if use_genes:
-            print("Filtering plasmids by plasmid-specific genes")
-            logger.info("Filtering plasmids by plasmid-specific genes")
-            time_start = time.time()
-            # don't want to clutter with more print statements
-            # a bit more complicated for BLAST which prints from c
-            old_stdout = os.dup(sys.stdout.fileno())
-            old_stderr = os.dup(sys.stderr.fileno())
-            blast_outfile = os.path.join(logs_dir,'blast_std.log')
-            stdfile = open(blast_outfile,'a')
-            os.dup2(stdfile.fileno(),sys.stdout.fileno())
-            os.dup2(stdfile.fileno(),sys.stderr.fileno())
+    # Step 5: Post-process filtering: BLAST output plasmids for plasmid-specific genes
+    if use_genes:
+        print("Filtering plasmids by plasmid-specific genes")
+        logger.info("Filtering plasmids by plasmid-specific genes")
+        time_start = time.time()
+        # don't want to clutter with more print statements
+        # a bit more complicated for BLAST which prints from c
+        old_stdout = os.dup(sys.stdout.fileno())
+        old_stderr = os.dup(sys.stderr.fileno())
+        blast_outfile = os.path.join(logs_dir,'blast_std.log')
+        stdfile = open(blast_outfile,'a')
+        os.dup2(stdfile.fileno(),sys.stdout.fileno())
+        os.dup2(stdfile.fileno(),sys.stderr.fileno())
 
-            hit_plasmids_dir = os.path.join(int_dir,"hit_cycs")
-            if not os.path.exists(hit_plasmids_dir):
-                os.mkdir(hit_plasmids_dir)
-            try:
-                hit_plasmids_fname = find_plasmid_gene_matches.find_plasmid_gene_matches( \
-                                        fasta_ofile, hit_plasmids_dir, genefiles_path, \
-                                        protfiles_path, None, ncbi_path, num_procs, PARAMS.GENE_MATCH_THRESH)
-            except:
-                os.dup2(old_stdout, sys.stdout.fileno())
-                os.dup2(old_stderr, sys.stderr.fileno())
-                stdfile.close()
-                print("Error filtering by plasmid genes. Check BLAST output file (blast_std.log)")
-                raise
-
+        hit_plasmids_dir = os.path.join(int_dir,"hit_cycs")
+        if not os.path.exists(hit_plasmids_dir):
+            os.mkdir(hit_plasmids_dir)
+        try:
+            hit_plasmids_fname = find_plasmid_gene_matches.find_plasmid_gene_matches( \
+                                    fasta_ofile, hit_plasmids_dir, genefiles_path, \
+                                    protfiles_path, None, ncbi_path, num_procs, PARAMS.GENE_MATCH_THRESH)
+        except:
             os.dup2(old_stdout, sys.stdout.fileno())
             os.dup2(old_stderr, sys.stderr.fileno())
             stdfile.close()
+            print("Error filtering by plasmid genes. Check BLAST output file (blast_std.log)")
+            raise
 
-            gene_filtered_ofile = os.path.join(int_dir, basename+".gene_filtered_cycs.fasta")
-            create_hits_fasta.create_hits(fasta_ofile, hit_plasmids_fname, gene_filtered_ofile)
-            time_end = time.time()
-            logger.info("{} seconds to filter plasmids using plasmid-specific gene hits".format(
-                time_end-time_start))
+        os.dup2(old_stdout, sys.stdout.fileno())
+        os.dup2(old_stderr, sys.stderr.fileno())
+        stdfile.close()
 
-        # Step 6: Post-process filtering: Classify gene filtered plasmids
-        if use_scores:
-            print("Getting scores of gene filtered plasmids")
-            logger.info("Using PlasClass to obtain scores of cycles")
-            time_start = time.time()
-            plasclass_filtered_file = os.path.join(int_dir, 'plasclass_filtered.out')
-            sys_stdout = sys.stdout # don't want to clutter with more print statements
-            sys_stderr = sys.stderr
-            plasclass_outfile = os.path.join(logs_dir,'plasclass_std.log')
-            stdfile = open(plasclass_outfile,'a')
-            sys.stdout = stdfile
-            sys.stderr = sys.stdout
-            classify_fastg.classify(fasta_ofile, plasclass_filtered_file, num_procs)
-            logger.info("Transforming scores")
-            plasmid_scores_file = os.path.join(int_dir, 'filtered_plasmids.scores')
-            parse_plasmid_scores.transformPlasClass(plasclass_filtered_file, plasmid_scores_file)
+        gene_filtered_ofile = os.path.join(int_dir, basename+".gene_filtered_cycs.fasta")
+        create_hits_fasta.create_hits(fasta_ofile, hit_plasmids_fname, gene_filtered_ofile)
+        time_end = time.time()
+        logger.info("{} seconds to filter plasmids using plasmid-specific gene hits".format(
+            time_end-time_start))
 
-            classified_plasmids_fname = os.path.join(hit_plasmids_dir,"classified_cycs.out")
-            with open(plasmid_scores_file) as f, open(classified_plasmids_fname,'w') as o:
-                for line in f:
-                    splt = line.strip().split()
-                    if float(splt[1]) > PARAMS.CLASSIFICATION_THRESH: o.write(splt[0] + '\n')
-            classification_filtered_ofile = os.path.join(int_dir, basename+".classified_cycs.fasta")
-            create_hits_fasta.create_hits(fasta_ofile, classified_plasmids_fname, classification_filtered_ofile)
-            sys.stdout = sys_stdout
-            sys.stderr = sys_stderr
-            stdfile.close()
-            time_end = time.time()
-            logger.info("{} seconds to filter cycles by PlasClass score".format(
-                time_end-time_start))
-            os.remove(plasmid_scores_file)
-            os.remove(plasclass_filtered_file)
+    # Step 6: Post-process filtering: Classify gene filtered plasmids
+    if use_scores:
+        print("Getting scores of filtered plasmids")
+        logger.info("Using PlasClass to obtain scores of cycles")
+        time_start = time.time()
+        plasclass_filtered_file = os.path.join(int_dir, 'plasclass_filtered.out')
+        sys_stdout = sys.stdout # don't want to clutter with more print statements
+        sys_stderr = sys.stderr
+        plasclass_outfile = os.path.join(logs_dir,'plasclass_std.log')
+        stdfile = open(plasclass_outfile,'a')
+        sys.stdout = stdfile
+        sys.stderr = sys.stdout
+        classify_fastg.classify(fasta_ofile, plasclass_filtered_file, num_procs)
+        logger.info("Transforming scores")
+        plasmid_scores_file = os.path.join(int_dir, 'filtered_plasmids.scores')
+        parse_plasmid_scores.transformPlasClass(plasclass_filtered_file, plasmid_scores_file)
 
-        # Step 7: Create set of confident plasmid predictions:
-        # Confident plasmid predictions - 2 out of 3 of: gene hits, plasmid classification, self loops
-        if use_scores and use_genes:
-            time_start = time.time()
-            gene_hit_set = set()
-            fp = open(gene_filtered_ofile, 'r')
-            for name,_,_ in utils.readfq(fp):
-                gene_hit_set.add(name)
-            fp.close()
+        classified_plasmids_fname = os.path.join(hit_plasmids_dir,"classified_cycs.out")
+        with open(plasmid_scores_file) as f, open(classified_plasmids_fname,'w') as o:
+            for line in f:
+                splt = line.strip().split()
+                if float(splt[1]) > PARAMS.CLASSIFICATION_THRESH: o.write(splt[0] + '\n')
+        classification_filtered_ofile = os.path.join(int_dir, basename+".classified_cycs.fasta")
+        create_hits_fasta.create_hits(fasta_ofile, classified_plasmids_fname, classification_filtered_ofile)
+        sys.stdout = sys_stdout
+        sys.stderr = sys_stderr
+        stdfile.close()
+        time_end = time.time()
+        logger.info("{} seconds to filter cycles by PlasClass score".format(
+            time_end-time_start))
+        os.remove(plasmid_scores_file)
+        os.remove(plasclass_filtered_file)
 
-            classified_set = set()
-            fp = open(classification_filtered_ofile, 'r')
-            for name,_,_ in utils.readfq(fp):
-                classified_set.add(name)
-            fp.close()
+    # Step 7: Create set of confident plasmid predictions:
+    # Confident plasmid predictions - 2 out of 3 of: gene hits, plasmid classification, self loops
+    if use_scores and use_genes:
+        time_start = time.time()
+        gene_hit_set = set()
+        fp = open(gene_filtered_ofile, 'r')
+        for name,_,_ in utils.readfq(fp):
+            gene_hit_set.add(name)
+        fp.close()
 
-            self_loop_set = set()
-            fp = open(self_loops_ofile, 'r')
-            for name,_,_ in utils.readfq(fp):
-                self_loop_set.add(name)
-            fp.close()
+        classified_set = set()
+        fp = open(classification_filtered_ofile, 'r')
+        for name,_,_ in utils.readfq(fp):
+            classified_set.add(name)
+        fp.close()
 
-            #modified 
-            cmd = [
-            'platon',
-            '--meta',
-            '--db', str(platon_db),
-            '--output',str(int_dir),
-            str(fasta_ofile),
-            ]
+        self_loop_set = set()
+        fp = open(self_loops_ofile, 'r')
+        for name,_,_ in utils.readfq(fp):
+            self_loop_set.add(name)
+        fp.close()
 
-            proc = sp.run(
-            cmd,
-            stdout=sp.PIPE,
-            stderr=sp.PIPE,
-            universal_newlines=True
-            )
-            if(proc.returncode != 0):
-                logger.info(f"sp :{cmd} abnomally terminated with code {proc.returncode}")
-                sys.exit("Platon failed")
-            
-            platon_filtered_ofile = os.path.join(int_dir, basename+".cycs.plasmid.fasta")
+        #modified 
+        print("Getting Platon prediction of filtered plasmids")
+        cmd = [
+        'platon',
+        '--meta',
+        '--db', str(platon_db),
+        '--output',str(int_dir),
+        str(fasta_ofile),
+        ]
 
-            platon_filtered_set = set()
-            fp = open(platon_filtered_ofile, 'r')
-            for name,_,_ in utils.readfq(fp):
-                platon_filtered_set.add(name)
-            fp.close()
+        proc = sp.run(
+        cmd,
+        stdout=sp.PIPE,
+        stderr=sp.PIPE,
+        universal_newlines=True
+        )
+        if(proc.returncode != 0):
+            logger.info(f"sp :{cmd} abnomally terminated with code {proc.returncode}")
+            sys.exit("Platon failed")
+        
+        platon_filtered_ofile = os.path.join(int_dir, basename+".cycs.plasmid.fasta")
 
-            classified_loops = classified_set & self_loop_set
-            gene_hit_loops = gene_hit_set & self_loop_set
-            classified_gene_hit = gene_hit_set & classified_set
-            classified_platon = classified_set & platon_filtered_set
+        platon_filtered_set = set()
+        fp = open(platon_filtered_ofile, 'r')
+        for name,_,_ in utils.readfq(fp):
+            platon_filtered_set.add(name)
+        fp.close()
 
-            confident_plasmid_set = classified_loops | classified_gene_hit | gene_hit_loops | classified_platon
+        classified_loops = classified_set & self_loop_set
+        gene_hit_loops = gene_hit_set & self_loop_set
+        classified_gene_hit = gene_hit_set & classified_set
+        classified_platon = classified_set & platon_filtered_set
 
-            confident_plasmids_fname = os.path.join(hit_plasmids_dir,"confident_cycs.out")
-            with open(confident_plasmids_fname,'w') as o:
-                for cyc in confident_plasmid_set:
-                    o.write(cyc+'\n')
+        confident_plasmid_set = classified_loops | classified_gene_hit | gene_hit_loops | classified_platon
 
-            confident_plasmid_ofile = os.path.join(outdir, basename+".confident_cycs.fasta")
-            create_hits_fasta.create_hits(fasta_ofile, confident_plasmids_fname, confident_plasmid_ofile)
+        confident_plasmids_fname = os.path.join(hit_plasmids_dir,"confident_cycs.out")
+        with open(confident_plasmids_fname,'w') as o:
+            for cyc in confident_plasmid_set:
+                o.write(cyc+'\n')
 
-            time_end = time.time()
+        confident_plasmid_ofile = os.path.join(outdir, basename+".confident_cycs.fasta")
+        create_hits_fasta.create_hits(fasta_ofile, confident_plasmids_fname, confident_plasmid_ofile)
 
-            logger.info("{} seconds to filter confident plasmids".format(
-                time_end-time_start))
-            
+        time_end = time.time()
 
-            # Step 8: Clean up any remaining intermediate files
-        if use_scores:
-            shutil.rmtree(hit_plasmids_dir)
-    os.remove(scores_file)
+        logger.info("{} seconds to filter confident plasmids".format(
+            time_end-time_start))
+        
+
+    # Step 8: Clean up any remaining intermediate files
+    if use_scores:
+        shutil.rmtree(hit_plasmids_dir)
+        os.remove(scores_file)
+    logger.info("Done")
+    print("Done")
 if __name__ == '__main__':
     main()
