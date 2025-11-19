@@ -175,4 +175,7 @@ There are some other files may be useful:
 - `PlasChain/simulate_script/chromosome_size.txt` reportes the length of reference chromosome.
 - `PlasChain/simulate_script/plasmid_size.txt` reportes the length of reference plasmid.
 - `PlasChain/simulate_script/simulation_info.txt` reportes the overall infomation about the simulation.
+- `PlasChain/simulate_script/selected_fna.txt` reportes the selected reference genome.
+- `PlasChain/simulate_script/association.txt` provides the mapping between each reference plasmid and its corresponding host chromosome; a null value indicates that the plasmid was randomly selected as a supplementary sequence (i.e., not derived from any real host chromosome).
+- `PlasChain/simulate_script/inter/ua.txt` provides the mapping between each reference plasmid and its assigned host chromosome; supplementary plasmids are randomly attached to existing host chromosomes.
 
