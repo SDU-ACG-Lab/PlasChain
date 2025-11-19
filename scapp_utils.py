@@ -1,6 +1,6 @@
 from __future__ import division
 import numpy as np
-import math,copy
+import math,copy,os
 import networkx as nx
 import re, pysam,sys
 import logging
@@ -61,6 +61,7 @@ def get_node_freq_vec(G,SEQs):
     for nd in G.nodes():
         vec = contig_to_freq_vector(SEQs[nd])
         G.add_node(nd, freq_vec=vec)
+
 def get_node_scores(scores_file,G):
     """ Write the plasmid scores into each node in the graph
     """
@@ -222,7 +223,6 @@ def get_discounted_node_cov(node,path,G):
     ###################### and then average the two discounted
     return node_cov
 
-
 def get_discounted_node_cov_optimized(node, path, G):
     """ 
     Return the coverage of the node, discounted separately by the coverage 
@@ -266,7 +266,6 @@ def get_discounted_node_cov_optimized(node, path, G):
     # 如果节点是路径的起点或终点，它可能只有前驱或后继
     return (disc_cov_pred + disc_cov_succ) / 2.0
 
-
 def get_path_covs(path,G,discount=False):
     cnts = {}
     if discount:
@@ -292,7 +291,6 @@ def get_path_mean_std(path, G, seqs, max_k_val=77,discount=True):
     mean = np.average(covs, weights = wgts)
     std = np.sqrt(np.dot(wgts,(covs-mean)**2))
     return (mean,std)
-
 
 def update_path_coverage_vals(path, G, seqs, max_k_val=77,):
     mean, _ = get_path_mean_std(path, G, seqs, max_k_val) ## NOTE: CAN WE STILL GUARANTEE CONVERGENCE WHEN DISCOUNTING COVERAGE ??!
@@ -606,7 +604,7 @@ def get_pe_support_evidence(G, bamfile, insert_mean, insert_std, max_k=77):
                 continue
 
             try:
-                # ✅ 使用 all_simple_paths,搜索所有短路径
+                # 使用 all_simple_paths,搜索所有短路径
                 paths = list(nx.all_simple_paths(G, s, t, cutoff=path_cutoff))
             except nx.NetworkXNoPath:
                 continue
@@ -667,11 +665,6 @@ def get_weighted_cov(G, in_nodes:list, out_nodes:list, t: str, max_k_val: int):
     in_nodes = to_node_list(in_nodes)
     out_nodes = to_node_list(out_nodes)
 
-    # # 检查所有节点存在
-    # for node in in_nodes + out_nodes:
-    #     if node not in G:
-    #         raise ValueError(f"Node {node} not in graph")
-
     cov_in = get_cov_from_spades_name_and_graph(in_nodes[0], G) if len(in_nodes) == 1 else get_contig_path_mean(in_nodes,G,max_k_val)
     cov_out= get_cov_from_spades_name_and_graph(out_nodes[0], G) if len(out_nodes) == 1 else get_contig_path_mean(out_nodes,G,max_k_val)
 
@@ -720,8 +713,6 @@ def get_supports(G: nx.DiGraph, in_nodes: list, out_nodes: list):
     support = 0
     for u in in_nodes:
         for v in out_nodes:
-            # 这里的 (u, v) 不必是图 G 中实际存在的边
-            # 它只需要在 pe_support_dict 中有记录即可
             support += pe_support_dict.get((u, v), 0)
             
     return support
@@ -887,7 +878,6 @@ def get_non_repeat_nodes(G, path):
             sing_nodes.append(nd)
     return sing_nodes
 
-
 def get_spades_type_name(count, path, seqs, max_k_val, G, cov=None):
     path_len = len(get_seq_from_path(path,seqs,max_k_val))
     if cov==None:
@@ -895,7 +885,6 @@ def get_spades_type_name(count, path, seqs, max_k_val, G, cov=None):
     info = ["RNODE", str(count+1), "length", str(path_len),
      "cov", '%.5f' % (cov)]
     return "_".join(info)
-
 
 def count_selfloop_mates(node,bamfile):
     """ Counts the number of off-node and on-node mate pairs of
@@ -916,7 +905,6 @@ def count_selfloop_mates(node,bamfile):
 
     return off_node_count, on_node_count
 
-
 def get_non_path_domain_node(path,valid_mate_pairs):
     """ check all non-repeat nodes only have mates
         mapping to contigs in the cycle
@@ -931,6 +919,7 @@ def get_non_path_domain_node(path,valid_mate_pairs):
         if num_mates_in_path < num_mates_not_in_path:
             non_path_dominated_nodes += 1
     return non_path_dominated_nodes
+
 def get_contigs_of_mates(node, bamfile, G):
     """ retrieves set of nodes mapped to by read pairs
         having one mate on node; discards isolated nodes
@@ -964,7 +953,6 @@ def get_contigs_of_mates(node, bamfile, G):
 
     return mate_tigs
 
-####### Updated - exclude path with node that mostly has mates outside of path
 def is_good_cyc(path, valid_mate_pairs):
     """ check all non-repeat nodes only have mates
         mapping to contigs in the cycle
@@ -1206,16 +1194,15 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, pool, all_path_d
 
     # #end while
     st = time.time()
-    path_set_before_merge = paths_set.copy()
+    # path_set_before_merge = paths_set.copy()
     logger.info("start merge...")
     merged_paths_set = merge_cycle(paths_set,SEQS,max_k,node_to_contig,contigs_path_name_dict,valid_pairs)
     logger.info("merge finished:")
     # merged_paths_set = paths_set
     ed = time.time()
     merge_time = ed - st
-    return merged_paths_set, merge_time, path_set_before_merge
-
-            
+    return merged_paths_set, merge_time
+    
 def merge_cycle(paths_set:set,SEQS,max_k,node_to_contig,contigs_path_name_dict,valid_mate_pairs):
     #记录原有set规模，如果有合并，则规模改变
     prev_len = -1
@@ -1230,7 +1217,6 @@ def merge_cycle(paths_set:set,SEQS,max_k,node_to_contig,contigs_path_name_dict,v
             cur_path,cur_cov  = sorted_paths_list[i]
             cur_set = set(cur_path)
             cur_score = score_dict[(cur_path,cur_cov)]
-            cur_non_domain_nodes = get_non_path_domain_node(cur_path,valid_mate_pairs)
 
             for j in range(i+1, len(sorted_paths_list)):
                 other_path, other_cov = sorted_paths_list[j]
@@ -1300,24 +1286,19 @@ def merge_cycle(paths_set:set,SEQS,max_k,node_to_contig,contigs_path_name_dict,v
                         enterpoint = sorted(intersection, key=lambda nd: get_cov_from_spades_name(nd), reverse=True)[0]
                         logger.info(f"normal merging,  enterpoint is {enterpoint}")
                         other_score = score_dict[(other_path,other_cov)]
-                        other_non_domain_nodes = get_non_path_domain_node(other_path,valid_mate_pairs)
                         
                         merged_path = merge_paths(cur_path,other_path, enterpoint)
                         merged_score = get_score_from_path(merged_path,SEQS,max_k)
-                        merged_non_domain_nodes = get_non_path_domain_node(merged_path,valid_mate_pairs)
 
-
-                        
                         # 修正后的合并判断条件：
                         # 1. 评分必须不低于两者中最高的评分
-                        # 2. 非主域节点总数不能增加
-                        if merged_score >= max(cur_score, other_score) * 0.95 and merged_non_domain_nodes <= cur_non_domain_nodes+other_non_domain_nodes:
+                        if merged_score >= max(cur_score, other_score) * 0.95:
 
                             # 合并
-                            logger.info(f"cur: cov: {cur_cov}, score: {cur_score}, non_domain_nodes: {cur_non_domain_nodes}")
-                            logger.info(f"other: cov: {other_cov}, score: {other_score}, non_domain_nodes: {other_non_domain_nodes}")
+                            logger.info(f"cur: cov: {cur_cov}, score: {cur_score}")
+                            logger.info(f"other: cov: {other_cov}, score: {other_score}")
                             merged_cov  = (cur_cov + other_cov)/2
-                            logger.info(f"merged_path: {merged_path} \ncov: {merged_cov}, score: {merged_score}, non_domain_nodes: {merged_non_domain_nodes}")
+                            logger.info(f"merged_path: {merged_path} \ncov: {merged_cov}, score: {merged_score}")
                             paths_set.add((merged_path,merged_cov))
                             score_dict[(merged_path,merged_cov)] = merged_score
                             #删除原有path
@@ -1330,8 +1311,7 @@ def merge_cycle(paths_set:set,SEQS,max_k,node_to_contig,contigs_path_name_dict,v
                             break
 
                         else:
-                            logger.info(f"bad merge: cur_score: {cur_score}, other_score: {other_score} --> merged_score: {merged_score}\n, "
-                                    f"cur_non_domain_node: {cur_non_domain_nodes}, other_non_domain_node: {other_non_domain_nodes} --> merged_non_domain_node:{merged_non_domain_nodes},skip")
+                            logger.info(f"bad merge: cur_score: {cur_score}, other_score: {other_score} --> merged_score: {merged_score}, skip")
             
             if merged_in_this_iteration:
             #直接重新进行,防止在循环中修改set可能导致的bug
@@ -1355,7 +1335,7 @@ def get_score_from_set(paths_set: set, SEQs,max_k=77):
         #     score_dict[(rc_p,cov)] = rc_score
     return score_dict
 
-def merge_paths(path1, path2,enterpoint,is_double=False):
+def merge_paths(path1, path2,enterpoint):
     
     # 将短序列插入到长序列中
     if len(path1) < len(path2):
@@ -1365,12 +1345,7 @@ def merge_paths(path1, path2,enterpoint,is_double=False):
     index1 = path1.index(enterpoint)
     index2 = path2.index(enterpoint)
 
-    # 合并路径：合并顺序按照 path1 + path2 的顺序，并去除重复节点
-    if is_double:
-        logger.info(f"double merge")
-        merged_path = path1[:index1] + path2[index2:] + path2[:index2] + path2[index2:] + path2[:index2] + path1[index1:]
-    else:
-        merged_path = path1[:index1] + path2[index2:] + path2[:index2] + path1[index1:]
+    merged_path = path1[:index1] + path2[index2:] + path2[:index2] + path1[index1:]
     return merged_path
     
 def is_similar(cur_set_mean_cov,other_set_mean_cov, cutoff=0.15,):
@@ -1383,6 +1358,7 @@ def is_similar(cur_set_mean_cov,other_set_mean_cov, cutoff=0.15,):
     logger.info(f"similar_diff: {similar_difference}")
     # TODO 当cov是倍数关系时，最终环的cov选择长环的，否则选两者的均值
     return  (similar_difference < cutoff) 
+
 def get_relative_difference(a:float, b:float):
     return abs(a-b)/((a+b)/2)
 
@@ -1398,12 +1374,27 @@ def rc_path(path: list):
     return tuple(rc_path)
 
 def get_score_from_path(path,SEQS,max_k=77,num_procs=1):
-    seqs = get_seq_from_path(path,SEQS,max_k)
-    c = plasclass.plasclass(num_procs)
-    prob = c.classify(seqs)
+    # 保存原始 stdout/stderr
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    
+    # 打开 /dev/null（跨平台）
+    with open(os.devnull, 'w') as devnull:
+        sys.stdout = devnull
+        sys.stderr = devnull
+        try:
+            print("predict score for path")
+            c = plasclass.plasclass()
+            seqs = get_seq_from_path(path,SEQS,max_k)
+            prob = c.classify(seqs)
+        finally:
+            # 恢复原始输出
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
     return prob
 
 def get_contig_path(path_file,id_dict,SEQS,G,contig_path_file,score_out_file,min_contig_path_len=4,max_k=77,num_procs=1):
+    start_time = time.time()
     # 图中所有节点的set集合
     node_set = set(G.nodes())
 
@@ -1490,7 +1481,7 @@ def get_contig_path(path_file,id_dict,SEQS,G,contig_path_file,score_out_file,min
                             
         logger.info(f"preprocess contig path score...")
         print("Preprocessing contig path score")
-        start_time = time.time()
+        
 
         # 将所有的正向contig path写入文件并批量预测得分
         for node, info in contigs_path_dict[0].items():
@@ -1501,8 +1492,20 @@ def get_contig_path(path_file,id_dict,SEQS,G,contig_path_file,score_out_file,min
                     o.write(f"{get_seq_from_path(new_path,SEQS,max_k,False)}\n")  
                 else:
                     raise ValueError(f"path of {name} : {path} have illeagel length")
-    classify(contig_path_file, score_out_file, num_procs)
+    # 保存原始 stdout/stderr
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
 
+    # 打开 /dev/null（跨平台）
+    with open(os.devnull, 'w') as devnull:
+        sys.stdout = devnull
+        sys.stderr = devnull
+        try:
+            classify(contig_path_file, score_out_file, num_procs)
+        finally:
+            # 恢复原始输出
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
     # 存储得分, plasclass 的输出格式： contig_name      score
     with open(score_out_file,'r')as f:
         for line in f:
@@ -1546,8 +1549,6 @@ def transfer_to_fullname(node:str, id_dict):
     else:
         sys.exit(f"contig path file format error: {node} must end with '+' or '-' ")
 
-
-    
 def dijkstra_path(G, path_dict:dict,SEQS, source, target, weight='weight',bidirectional=False):
 
 
@@ -1942,6 +1943,7 @@ def merge_path_through_contig_path(cur_path, other_path, nd, node_to_contig, con
            
     
     return None
+
 def contain(path, subseq):
     # logger.info(f"check {subseq} in \n {path}")
     for i in range(len(path)//2):
@@ -1950,7 +1952,7 @@ def contain(path, subseq):
     return -1
 
 def merge_contig_path(path1, path2, nd,left_idx, right_idx):
-    logger.info(f"merge {str(path1)} and {str(path2)}")
+    # logger.info(f"merge {str(path1)} and {str(path2)}")
     right_idx-=1
     return path1[:left_idx] + path2[right_idx:]+path2[:right_idx] + path1[left_idx:]
 
@@ -1976,6 +1978,7 @@ def extract_node_id(node_label):
     else:
         mark = match.group(1)+"+"
     return mark
+
 def component_sort_key(comp):
     """
     创建一个排序键, 基于组件中所有节点的ID拼接而成的字符串。
