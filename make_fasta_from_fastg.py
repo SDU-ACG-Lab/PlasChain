@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 import re, argparse, os
-from scapp_utils import readfq
+from plaschain_utils import readfq
 
 def parse_user_input():
     parser = argparse.ArgumentParser(
