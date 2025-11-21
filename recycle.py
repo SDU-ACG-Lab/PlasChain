@@ -110,6 +110,7 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
                     genes_file, use_genes, scores_file, use_scores, path_file,\
                     max_CV, min_length,min_contig_path_len, ISO=False):
     ''' Run SCAPP'''
+    # 创建全局计时器实例
 
     logger = logging.getLogger("scapp_logger")
 
@@ -141,9 +142,11 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
     
     print(f"get contig path which is longer than {min_contig_path_len}")
     path_dict,contigs_path_name_dict, node_to_contig, scores_dict= get_contig_path(path_file, id_to_fullname,SEQS,original_comp,contig_path_ofile,contig_path_score_ofile,min_contig_path_len=min_contig_path_len,max_k=max_k,num_procs=num_procs)
+    print(f"estimate insert size")
+    mean, std = estimate_insert_size_distribution(bamfile)
     print(f"get valid PE support...")
     st = time.time()
-    mean, std = estimate_insert_size_distribution(bamfile)
+    
     pe_contigs_path_dict, valid_pairs = get_pe_support_evidence(G, bamfile, mean, std, max_k)
     pe_support_dict = build_pe_support_dict(pe_contigs_path_dict)
     G.graph['pe_support_data'] = pe_support_dict
@@ -154,12 +157,15 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
     #     logger.info(f"{key}\t {path_dict[key]}\n")
 
     # add a score to every node
+    print(f"Annotate tetranucleotide frequency")
     get_node_freq_vec(G,SEQS)
     if use_scores:
+        print(f"Annotate score")
         get_node_scores(scores_file,G)
 
     # keep track of the nodes that have plasmid genes on them
     if use_genes:
+        print(f"Annotate PSG")
         get_gene_nodes(genes_file,G)
 
     # add contig path with hi conf node as fisrt node
@@ -183,24 +189,25 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
              str(get_num_from_spades_name(nd[0])) + "\n")
     
     # 获取强连通分支
-    comps = (G.subgraph(c).copy() for c in nx.strongly_connected_components(G))
+    remove_hi_confidence_chromosome(G,node_to_contig)
+    comps = [G.subgraph(c).copy() for c in nx.strongly_connected_components(G)]
 
-    # 删除hi conf chromosome 后，再更新强连通分支
-    if use_scores:
-        # Remove nodes that are most likely chromosomal
-        # This may
-        smaller_comps = set()
-        for comp in comps:
-            remove_hi_confidence_chromosome(comp,node_to_contig)
-            smaller_comps.update((comp.subgraph(c).copy() for c in nx.strongly_connected_components(comp)))
-        comps = smaller_comps
+    # # 删除hi conf chromosome 后，再更新强连通分支
+    # if use_scores:
+    #     # Remove nodes that are most likely chromosomal
+    #     # This may
+    #     smaller_comps = set()
+    #     for comp in comps:
+            
+    #         smaller_comps.update((comp.subgraph(c).copy() for c in nx.strongly_connected_components(comp)))
+    #     comps = smaller_comps
 
     ###################################
     # iterate through SCCs looking for cycles
     ###################################
 
     #multiprocessing to find shortest paths
-    pool = mp.Pool(num_procs)
+    # pool = mp.Pool(num_procs)
 
     print("================== Added paths ====================")
     logger.info("================== Added paths ====================")
@@ -231,9 +238,9 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
         if redundant:
              redundant = False
              continue # have seen the RC version of component
-        COMP = nx.DiGraph()
-        COMP = c.to_directed()
-        
+        # COMP = nx.DiGraph()
+        # COMP = c.to_directed()
+        COMP=c
     
         rc_nodes = [rc_node(n) for n in COMP.nodes()]
         # logger.info(f"add {str(rc_nodes)}")
@@ -242,7 +249,7 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
         VISITED_NODES.update(rc_nodes)
         # 核心函数
         # 参数的前三个， COMP当前强连通分支， G原图，用于计算原图(包含dead end)中的discounted coverage
-        path_set, merge_time,path_set_before_merge = process_component(COMP, G ,max_k, min_length, max_CV, SEQS, pool, path_dict,node_to_contig,contigs_path_name_dict,proxy_contig_dict
+        path_set, merge_time = process_component(COMP, G ,max_k, min_length, max_CV, SEQS, path_dict,node_to_contig,contigs_path_name_dict,proxy_contig_dict
                                                                        ,valid_pairs,use_scores, use_genes, num_procs)
         merge_cost+=merge_time
         for p in path_set:
@@ -258,8 +265,7 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
         logger.info(f"{processed_comps}/ {all_comps} have been processed...")
         print(f"{processed_comps}/ {all_comps} have been processed...")
     logger.info(f"merge cycle consumes {merge_cost} seconds")
-    pool.close()
-    pool.join()
+
     f_cycs_fasta.close()
     f_cyc_paths.close()
     f_long_self_loops.close()

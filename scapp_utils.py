@@ -15,11 +15,13 @@ from parse_plasmid_scores import transformByLength
 from sklearn.metrics.pairwise import cosine_similarity
 from collections import defaultdict, Counter
 from node_feature import *
+from functools import wraps
 
 import PARAMS
 
 complements = {'A':'T', 'C':'G', 'G':'C', 'T':'A'}
 logger = logging.getLogger("scapp_logger")
+
 
 def readfq(fp): # this is a generator function
     """ # lh3's fast fastX reader:
@@ -436,46 +438,34 @@ def get_unoriented_sorted_str(path):
         all_rc_path.append(p)
     return "".join(sorted(all_rc_path))
 
-def estimate_insert_size_distribution(bamfile):
 
+def estimate_insert_size_distribution(bamfile, max_samples=10000):
     """
-
-    从 BAM 文件中估计 insert size 的均值和标准差
-
-    :param bamfile: BAM 文件对象
-
-    :return: (mean, std)
-
+    流式估计 insert size 的均值和标准差，最多采样 max_samples 条记录。
     """
-
-    insert_sizes = []
-
-
-
-   
+    n = 0
+    mean = 0.0
+    M2 = 0.0  # 用于计算方差
 
     for hit in bamfile:
-
-        if hit.is_proper_pair and not hit.is_unmapped and not hit.mate_is_unmapped:
-
+        if n >= max_samples:
+            break
+        if (hit.is_proper_pair 
+            and not hit.is_unmapped 
+            and not hit.mate_is_unmapped):
             tlen = abs(hit.template_length)
-
             if tlen > 0:
+                n += 1
+                delta = tlen - mean
+                mean += delta / n
+                delta2 = tlen - mean
+                M2 += delta * delta2
 
-                insert_sizes.append(tlen)
+    if n < 2:
+        return 300, 50  # 默认值
 
-
-
-    if not insert_sizes:
-
-        return 300, 50  # 默认值（保守估计）
-
-
-
-    mean = np.mean(insert_sizes)
-
-    std = np.std(insert_sizes)
-
+    variance = M2 / (n - 1)  # 无偏估计（sample std）
+    std = math.sqrt(variance)
     return mean, std
 
 def get_physical_position(contig, read_pos, read_strand, contig_dir):
@@ -710,12 +700,13 @@ def get_supports(G: nx.DiGraph, in_nodes: list, out_nodes: list):
     if not pe_support_dict:
         return 0
 
-    support = 0
-    for u in in_nodes:
-        for v in out_nodes:
-            support += pe_support_dict.get((u, v), 0)
-            
-    return support
+    # support = 0
+    # # for u in in_nodes:
+    # #     for v in out_nodes:
+    # #         support += pe_support_dict.get((u, v), 0)
+    
+    return pe_support_dict.get((in_nodes[-1], out_nodes[0]), 0)
+
 
 def get_edge_cost(G, in_nodes:list, out_nodes:list, in_score:int, out_score:int, in_vec, out_vec, max_k: int):
     # 注意：函数签名不再包含 pe_support_dict
@@ -758,7 +749,8 @@ def get_shortest(args_array):
     if path is not None: paths_list.append((path,shortest_score,use_contig))
     # done
 
-def enum_high_mass_shortest_paths(G, pool,path_dict,SEQS, use_scores=False, use_genes=False, seen_paths=None, max_k=77):
+
+def enum_high_mass_shortest_paths(G,path_dict,SEQS, use_scores=False, use_genes=False, seen_paths=None, max_k=77):
     """ given component subgraph, returns list of paths that
         - is non-redundant (includes) no repeats of same cycle
         - includes shortest paths starting at each node n (assigning
@@ -791,12 +783,9 @@ def enum_high_mass_shortest_paths(G, pool,path_dict,SEQS, use_scores=False, use_
              or G.nodes[n].get('gene', False) is True)
             ]
     paths_list = []
-    if pool._processes > 1 and pool._processes <= 2*len(nodes): # otherwise, run single threaded
-        paths_list=Manager().list()
-        pool.map(get_shortest, [[node, path_dict,SEQS,G, paths_list] for node in nodes])
-    else:
-        for node in nodes:
-            get_shortest([node,path_dict,SEQS,G,paths_list])
+
+    for node in nodes:
+        get_shortest([node,path_dict,SEQS,G,paths_list])
 
 
     paths_list.sort(key=sort_key)
@@ -836,22 +825,23 @@ def get_high_mass_shortest_path(node,G,path_dict,proxy_contig_dict,SEQS,use_scor
     path = None
     shortest_path = None
     use_contig = None
-    if node in proxy_contig_dict.keys():
-        for path_info in proxy_contig_dict[node]:
-            path, name, score, pre,freq_vec = path_info
-            if pre is not None:
-                proxy = pre[0]
-                if proxy not in G.nodes(): continue
-                for pred in G.predecessors(proxy):
-                    try:
-                        length, path, through_contig = dijkstra_path(G,path_dict,SEQS,source=proxy,target=pred, weight='cost')
-                        if length < shortest_score:
-                            shortest_path = tuple(path)
-                            shortest_score = length
-                            use_contig = through_contig
-                        # logger.info(f"special path:  {str(folded_path)}")
-                    except nx.exception.NetworkXNoPath:
-                        continue
+    if proxy_contig_dict:
+        if node in proxy_contig_dict.keys():
+            for path_info in proxy_contig_dict[node]:
+                path, name, score, pre,freq_vec = path_info
+                if pre is not None:
+                    proxy = pre[0]
+                    if proxy not in G.nodes(): continue
+                    for pred in G.predecessors(proxy):
+                        try:
+                            length, path, through_contig = dijkstra_path(G,path_dict,SEQS,source=proxy,target=pred, weight='cost')
+                            if length < shortest_score:
+                                shortest_path = tuple(path)
+                                shortest_score = length
+                                use_contig = through_contig
+                            # logger.info(f"special path:  {str(folded_path)}")
+                        except nx.exception.NetworkXNoPath:
+                            continue
     for pred in G.predecessors(node):
         try:
             length, path, through_contig = dijkstra_path(G,path_dict,SEQS,source=node,target=pred, weight='cost')
@@ -970,9 +960,8 @@ def is_good_cyc(path, valid_mate_pairs):
         return False
     return True
     
-#########################
-def process_component(COMP, G, max_k, min_length, max_CV, SEQS, pool, all_path_dict,node_to_contig,contigs_path_name_dict,
-                      proxy_contig_dict, valid_pairs, use_scores=False, use_genes=False, num_procs=1):
+def process_component(COMP, G, max_k, min_length, max_CV, SEQS, all_path_dict,node_to_contig,contigs_path_name_dict,
+                      all_proxy_contig_dict, valid_pairs, use_scores=False, use_genes=False, num_procs=1):
     """ run recycler for a single component of the graph
         use multiprocessing to process components in parallel
     """
@@ -984,6 +973,7 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, pool, all_path_d
     
     # preprocess conitg path
     path_dict =  get_native_path_dict(COMP, all_path_dict)
+    proxy_contig_dict = get_native_proxy_path_dict(COMP, all_proxy_contig_dict)
 
     # looking for paths starting from the nodes annotated with plasmid genes
     if use_genes:
@@ -1043,6 +1033,10 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, pool, all_path_d
                 update_path_with_covs(path, COMP, covs)
                 path_count += 1
                 paths_set.add((path,before_cov))
+
+                # 更新contig path information
+                path_dict = get_native_path_dict(COMP, path_dict)
+                proxy_contig_dict = get_native_proxy_path_dict(COMP, proxy_contig_dict)
             else:
                 logger.info("Did not add plasmid gene path: %s" % (str(path)))
 
@@ -1104,6 +1098,9 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, pool, all_path_d
                 update_path_with_covs(path, COMP, covs)
                 path_count += 1
                 paths_set.add((path,before_cov))
+                # 更新contig path information
+                path_dict = get_native_path_dict(COMP, path_dict)
+                proxy_contig_dict = get_native_proxy_path_dict(COMP, proxy_contig_dict)
             else:
                 logger.info("Did not add Hi conf path: %s" % (str(path)))
 
@@ -1115,7 +1112,7 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, pool, all_path_d
 #######################################################################################
 
 
-    paths = enum_high_mass_shortest_paths(COMP, pool,path_dict ,SEQS,use_scores,use_genes,seen_unoriented_paths,max_k)
+    paths = enum_high_mass_shortest_paths(COMP,path_dict ,SEQS,use_scores,use_genes,seen_unoriented_paths,max_k)
     last_path_count = 0
     last_node_count = 0
 
@@ -1176,6 +1173,10 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, pool, all_path_d
                     update_path_with_covs(curr_path, COMP, covs)
                     path_count += 1
                     paths_set.add((tuple(curr_path), before_cov))
+
+                    # 更新contig path information，这里只需要更新path_dict
+                    path_dict = get_native_path_dict(COMP, path_dict)
+
                     break
 
                 else:
@@ -1190,7 +1191,7 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, pool, all_path_d
         # recalculate paths on the component
         print(str(len(COMP.nodes())) + " nodes remain in component")
         logger.info("Remaining nodes: %d" % (len(COMP.nodes())))
-        paths = enum_high_mass_shortest_paths(COMP, pool,path_dict,SEQS, use_scores,use_genes,seen_unoriented_paths,max_k)
+        paths = enum_high_mass_shortest_paths(COMP,path_dict,SEQS, use_scores,use_genes,seen_unoriented_paths,max_k)
 
     # #end while
     st = time.time()
@@ -2050,6 +2051,51 @@ def get_native_path_dict(COMP, contigs_path_dict):
                 continue
             for idx, (path, name, s, pre,freq_vec) in enumerate(info_list):
                 if all(nd in COMP for nd in path):
-                    path_dict[k].setdefault(node, []).append(path, name, s, pre,freq_vec)
-            
+                    path_dict[k].setdefault(node, []).append((path, name, s, pre,freq_vec))
     return path_dict
+
+def get_native_proxy_path_dict(COMP, all_proxy_path_dict):
+    proxy_path_dict = {}
+    for node, info_list in list(all_proxy_path_dict.items()):  # 使用list()创建副本以安全地修改原字典
+            if node not in COMP.nodes():
+                continue
+            for idx, (path, name, s, pre,freq_vec) in enumerate(info_list):
+                if all(nd in COMP for nd in path):
+                    proxy_path_dict.setdefault(node, []).append((path, name, s, pre,freq_vec))
+    return proxy_path_dict
+
+def trim_path_tips_light(G, path):
+    if len(path) <= 1:
+        return path
+    
+    # 只关注 path 内部的连接（构建 induced subgraph 的度数）
+    path_set = set(path)
+    in_deg = {}
+    out_deg = {}
+    
+    for v in path:
+        # 只统计 path 内部的邻居
+        in_deg[v] = sum(1 for u in G.predecessors(v) if u in path_set)
+        out_deg[v] = sum(1 for w in G.successors(v) if w in path_set)
+    
+    path = list(path)
+    i, j = 0, len(path) - 1
+    
+    # 从前向后 trim sources
+    while i < j and in_deg[path[i]] == 0:
+        u = path[i]
+        # 更新后继的入度
+        for w in G.successors(u):
+            if w in path_set and i < path.index(w) <= j:
+                in_deg[w] -= 1
+        i += 1
+    
+    # 从后向前 trim sinks
+    while i < j and out_deg[path[j]] == 0:
+        u = path[j]
+        for w in G.predecessors(u):
+            if w in path_set and i <= path.index(w) < j:
+                out_deg[w] -= 1
+        j -= 1
+    
+    return path[i:j+1]

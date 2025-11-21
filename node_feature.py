@@ -6,15 +6,17 @@ def dna_bases(k):
     """Generate all possible DNA k-mers in sorted order."""
     return [''.join(p) for p in itertools.product('ACGT', repeat=k)]
 
-def reverse_complement(kmer):
-    """Return the reverse complement of a DNA k-mer."""
-    comp = {'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C'}
-    return ''.join(comp[b] for b in reversed(kmer))
+# 全局互补表（只创建一次）
+_COMPLEMENT_TABLE = str.maketrans('ACGT', 'TGCA')  # 注意顺序对应！
 
-def canonical_kmer(kmer):
-    """Return the canonical form: lexicographically smaller of kmer and its reverse complement."""
+def reverse_complement(kmer: str) -> str:
+    """Return the reverse complement of a DNA k-mer (fast version)."""
+    return kmer.translate(_COMPLEMENT_TABLE)[::-1]
+
+def canonical_kmer(kmer: str) -> str:
+    """Return the canonical k-mer (lexicographically smaller of kmer and its RC)."""
     rc = reverse_complement(kmer)
-    return min(kmer, rc)
+    return kmer if kmer < rc else rc
 
 def get_kmers(seq, k):
     """Generate all k-mers from a DNA sequence."""
