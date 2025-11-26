@@ -13,7 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from parse_plasmid_scores import transformByLength
 from sklearn.metrics.pairwise import cosine_similarity
-from collections import defaultdict, Counter
+from collections import defaultdict, Counter, deque
 from node_feature import *
 from functools import wraps
 
@@ -60,20 +60,25 @@ def readfq(fp): # this is a generator function
 def get_node_freq_vec(G,SEQs):
     """ Annotate each node in the graph with its frequency vector
     """
-    for nd in G.nodes():
-        vec = contig_to_freq_vector(SEQs[nd])
-        G.add_node(nd, freq_vec=vec)
+    node_vec_dict = {}
+    unique_canonical_nodes = {canonicalize(n) for n in G.nodes()}
+    for can_node in unique_canonical_nodes:
+        vec = contig_to_freq_vector(SEQs[can_node])
+        node_vec_dict[can_node] = vec
+    return node_vec_dict
 
 def get_node_scores(scores_file,G):
     """ Write the plasmid scores into each node in the graph
     """
     scores = {}
+    unique_canonical_nodes = {canonicalize(n) for n in G.nodes()}
     with open(scores_file) as f:
         for line in f:
             split = line.strip().split()
-            scores[split[0]] = float(split[1])
-    for nd in G.nodes():
-        G.add_node(nd, score=scores[nd])
+            if split[0] in unique_canonical_nodes: 
+                scores[split[0]] = float(split[1])
+
+    return scores
 
 def get_gene_nodes(genes_file,G):
     """ Annotate each node in the graph whether it has plasmid gene in it
@@ -82,11 +87,8 @@ def get_gene_nodes(genes_file,G):
     with open(genes_file) as f:
         for line in f:
             gene_nodes.add(line.strip())
-    for nd in G.nodes():
-        if nd in gene_nodes:
-            G.add_node(nd, gene=True)
-        else:
-            G.add_node(nd,gene=False)
+
+    return gene_nodes
 
 def rc_seq(dna):
     rev = reversed(dna)
@@ -338,7 +340,7 @@ def get_total_path_mass(path,G):
     return sum([get_length_from_spades_name(p) * \
         get_cov_from_spades_name_and_graph(p,G) for p in path])
 
-def get_long_self_loops(G, min_length, seqs, bamfile, use_scores=True, use_genes=True, max_k_val=77, score_thresh=0.9, mate_thresh = 0.1):
+def get_long_self_loops(G,node_score_dict,node_gene_set, min_length, seqs, bamfile, use_scores=True, use_genes=True, max_k_val=77, score_thresh=0.9, mate_thresh = 0.1):
     """ returns set of self loop nodes paths that are longer
         than min length and satisfy mate pair requirements;
         removes those and short self loops from G
@@ -363,7 +365,7 @@ def get_long_self_loops(G, min_length, seqs, bamfile, use_scores=True, use_genes
             # take nodes that have plasmid genes or very high plasmid scores
             if use_scores and use_genes:
                 logger.info("SLS: %f" % PARAMS.SELF_LOOP_SCORE_THRESH)
-                if G.nodes[nd]['score'] > PARAMS.SELF_LOOP_SCORE_THRESH or G.nodes[nd]['gene']==True:
+                if node_score_dict[canonicalize(nd)] > PARAMS.SELF_LOOP_SCORE_THRESH or nd in node_gene_set:
                     potential_plasmids.add(nd_path)
                     logger.info("Added path: %s - high scoring long self-loop" % nd)
                     to_remove.append(nd)
@@ -394,36 +396,36 @@ def get_long_self_loops(G, min_length, seqs, bamfile, use_scores=True, use_genes
     logger.info("Removing %d self-loop nodes" % len(to_remove))
     return potential_plasmids
 
-def remove_hi_confidence_chromosome(G,node_to_contig):
+def remove_hi_confidence_chromosome(G,node_to_contig,score_dict):
     """ Remove the long nodes that are predicted to likely be chromosomal
         Retain nodes in potential plasmid contigs
     """
     to_remove = []
     for nd in G.nodes():
         if get_length_from_spades_name(nd) > PARAMS.CHROMOSOME_LEN_THRESH and \
-            G.nodes[nd]['score'] < PARAMS.CHROMOSOME_SCORE_THRESH and \
+            score_dict[canonicalize(nd)] < PARAMS.CHROMOSOME_SCORE_THRESH and \
             nd not in node_to_contig:
             to_remove.append(nd)
 
             to_remove.append(rc_node(nd))
     G.remove_nodes_from(to_remove)
-    logger.info(f"to remove: {str(to_remove)}")
+    # logger.info(f"to remove: {str(to_remove)}")
     logger.info("Removed %d long, likely chromosomal nodes" % len(set(to_remove)))
 
-def get_hi_conf_plasmids(G):
+def get_hi_conf_plasmids(G,score_dict):
     """ Return a list of nodes that are likely plasmids
     """
 
     hi_conf_plasmids = [nd for nd in G.nodes() if (get_length_from_spades_name(nd) > PARAMS.PLASMID_LEN_THRESH and \
-                        G.nodes[nd]['score'] > PARAMS.PLASMID_SCORE_THRESH)]
+                        score_dict[canonicalize(nd)] > PARAMS.PLASMID_SCORE_THRESH)]
 
     logger.info("Found %d long, likely plasmid nodes" % len(hi_conf_plasmids))
     return hi_conf_plasmids
 
-def get_plasmid_gene_nodes(G):
+def get_plasmid_gene_nodes(G,gene_set):
     """ Return list of nodes annotated as having a plasmid gene
     """
-    plasmid_gene_nodes = [nd for nd in G.nodes() if G.nodes[nd]['gene']==True]
+    plasmid_gene_nodes = [nd for nd in gene_set if nd in G.nodes()]
     logger.info("Found %d nodes with plasmid genes" % len(plasmid_gene_nodes))
     return plasmid_gene_nodes
 
@@ -525,25 +527,83 @@ def build_pe_support_dict(pe_contigs_path_dict):
     logger.info(f"Total PE support count (by path): {total_support}")
     return pe_support_dict
 
-def get_pe_support_evidence(G, bamfile, insert_mean, insert_std, max_k=77):
-    """
-    从 BAM 文件提取所有节点的 PE 支持证据
-    返回: pe_contigs_path_dict[0] 正向, [1] 反向
-    """
-    path_cutoff = min(10, math.ceil((insert_mean + 2 * insert_std) / max_k))
-    logger.info(f"PE path cutoff = {path_cutoff}, k = {max_k}, insert mean = {insert_mean}, std = {insert_std}")
+def find_all_paths_with_mid_length_cutoff(
+    G, start, target, cutoff, node_length_cache,
+    max_hops=10, max_paths=100
+):
+    if start not in G or target not in G:
+        return []
+    if start == target:
+        return [[start]]
 
-    pe_contigs_path_dict = [defaultdict(list), defaultdict(list)]  # 使用 defaultdict
-    all_pe_pairs = []  # 缓存所有 valid read pairs
+    all_paths = []
+    queue = deque()
+    queue.append((start, [start], 0, 0))  # (node, path, mid_len, hops)
 
-    # Step 1: 一次性提取所有 valid read pairs
-    logger.info("Extracting valid paired-end reads...")
+    while queue and len(all_paths) < max_paths:
+        current, path, mid_len, hops = queue.popleft()
+
+        if current == target:
+            if mid_len <= cutoff:
+                all_paths.append(path)
+            continue
+
+        if hops >= max_hops or mid_len > cutoff:
+            continue
+
+        for neighbor in G.successors(current):
+            if neighbor in path:  # simple path only
+                continue
+
+            add_len = 0 if neighbor == target else node_length_cache.get(neighbor, 0)
+            new_mid_len = mid_len + add_len
+            new_hops = hops + 1
+
+            if new_mid_len > cutoff and neighbor != target:
+                continue
+
+            queue.append((neighbor, path + [neighbor], new_mid_len, new_hops))
+
+    return all_paths
+
+
+# --- Main function ---
+def get_pe_support_evidence(G, bamfile, insert_mean, insert_std, max_k=77, max_hops=10, max_paths_per_pair=50):
+    """
+    Extract PE support evidence from BAM file.
+    Returns:
+        pe_contigs_path_dict[0]: forward paths
+        pe_contigs_path_dict[1]: reverse paths
+        valid_mate_pairs: dict of mutual supports
+    """
+    logger.info(f"k = {max_k}, insert mean = {insert_mean}, std = {insert_std}")
+
+    # === Step 0: Precompute global info ===
+    # Node length cache
+    node_length_cache = {}
+    for node in G.nodes():
+        base = canonicalize(node)
+        node_length_cache[node] = get_length_from_spades_name(base)
+
+    # Component map for fast connectivity check
+    comp_id_map = {}
+    for cid, comp in enumerate(nx.connected_components(G.to_undirected())):
+        for node in comp:
+            comp_id_map[node] = cid
+
+    # Result containers
+    pe_contigs_path_dict = [defaultdict(list), defaultdict(list)]
+    valid_mate_pairs = defaultdict(set)
+
+    # === Step 1: Stream and group PE pairs by (u, v) ===
+    logger.info("Streaming and grouping valid PE reads...")
+    pe_grouped = defaultdict(list)
     seen_read_ids = set()
 
     for read in bamfile.fetch():
-        if not read.is_paired or read.is_unmapped or read.mate_is_unmapped:
+        if not (read.is_paired and not read.is_unmapped and not read.mate_is_unmapped):
             continue
-        if read.is_read2:  # 只处理 read1,避免重复
+        if read.is_read2:
             continue
 
         qname = read.query_name
@@ -553,39 +613,38 @@ def get_pe_support_evidence(G, bamfile, insert_mean, insert_std, max_k=77):
 
         u_contig = read.reference_name
         v_contig = bamfile.getrname(read.next_reference_id)
-
         if u_contig is None or v_contig is None or u_contig == v_contig:
             continue
 
+        # Strand & position
         u_strand = '-' if read.is_reverse else '+'
         v_strand = '-' if read.mate_is_reverse else '+'
 
-        u_contig_strand = '-' if u_contig[-1]=="'" else '+'
-        v_contig_strand = '-' if v_contig[-1]=="'" else '+'
+        u_contig_strand = '-' if u_contig.endswith("'") else '+'
+        v_contig_strand = '-' if v_contig.endswith("'") else '+'
+
         u_pos = get_physical_position(u_contig, read.reference_start, u_strand, u_contig_strand)
         v_pos = get_physical_position(v_contig, read.next_reference_start, v_strand, v_contig_strand)
 
-        all_pe_pairs.append({
+        pe_grouped[(u_contig, v_contig)].append({
             'u': u_contig,
             'v': v_contig,
-            'u_strand': u_strand,
-            'v_strand': v_strand,
             'u_pos': u_pos,
             'v_pos': v_pos,
         })
 
-    logger.info(f"Found {len(all_pe_pairs)} valid PE pairs.")
+    logger.info(f"Grouped into {len(pe_grouped)} (u,v) pairs.")
 
-    # Step 2: 按 (u,v) 分组,减少重复路径搜索
-    pe_grouped = defaultdict(list)
-    for pair in all_pe_pairs:
-        key = (pair['u'], pair['v'])
-        pe_grouped[key].append(pair)
-
-    # Step 3: 对每组 (u,v) 搜索所有可能路径
+    # === Step 2: Process each (u, v) group ===
     total_paths_found = 0
-    valid_mate_pairs = {}
+    cutoff = insert_mean + 2 * insert_std
+
     for (u_contig, v_contig), pairs in pe_grouped.items():
+        u_comp = comp_id_map.get(u_contig)
+        v_comp = comp_id_map.get(v_contig)
+        if u_comp is None or v_comp is None or u_comp != v_comp:
+            continue  # skip if not in same component
+
         for is_rc in [False, True]:
             s = rc_node(u_contig) if is_rc else u_contig
             t = rc_node(v_contig) if is_rc else v_contig
@@ -593,45 +652,56 @@ def get_pe_support_evidence(G, bamfile, insert_mean, insert_std, max_k=77):
             if s not in G or t not in G:
                 continue
 
-            try:
-                # 使用 all_simple_paths,搜索所有短路径
-                paths = list(nx.all_simple_paths(G, s, t, cutoff=path_cutoff))
-            except nx.NetworkXNoPath:
+            # Fast path: direct edge?
+            if G.has_edge(s, t):
+                paths = [[s, t]]
+            else:
+                paths = find_all_paths_with_mid_length_cutoff(
+                    G, s, t, cutoff, node_length_cache,
+                    max_hops=max_hops, max_paths=max_paths_per_pair
+                )
+
+            if not paths:
                 continue
 
-            for path in paths:
-                total_len = get_total_len_from_path(path, max_k, cycle=False)
-                # 估计 insert size：总长 - u_pos - v_pos
-                # 注意：u_pos 和 v_pos 是从 contig 起始到比对位置的距离
-                # 所以 insert_size_est ≈ total_len - u_pos - v_pos
-                
+            v_len = node_length_cache.get(v_contig, 0)
 
-                valid_pairs = [
-                    p for p in pairs
-                    if abs(total_len - p['u_pos'] + (get_length_from_spades_name(v_contig)-p['v_pos']) - insert_mean) <= 2 * insert_std
-                ]
-                count = len(valid_pairs)
-                if count < 2:  
+            for path in paths:
+                total_len = sum(
+                    node_length_cache.get(node, 0) - (max_k - 1) if i > 0 else node_length_cache.get(node, 0)
+                    for i, node in enumerate(path)
+                )
+                # Simpler: total physical length of path
+                # If you have a helper, use: total_len = get_total_len_from_path(path, max_k, cycle=False)
+
+                # Count valid pairs based on insert size estimate
+                valid_count = 0
+                for p in pairs:
+                    # insert_size ≈ u_pos + (path length) + (v_len - v_pos)
+                    insert_est = p['u_pos'] + total_len + (v_len - p['v_pos'])
+                    if abs(insert_est - insert_mean) <= 2 * insert_std:
+                        valid_count += 1
+
+                if valid_count < 2:
                     continue
 
-                score = count
-                valid_mate_pairs.setdefault(s,set()).add(t)
-                valid_mate_pairs.setdefault(t,set()).add(s)
-                # 正向路径
+                # Store forward path
                 pe_contigs_path_dict[0][path[0]].append((
-                    tuple(path[1:]), "mate", score, None
+                    tuple(path[1:]), "mate", valid_count, None
                 ))
+
+                # Store reverse path
+                rev_path = list(reversed(path))
+                pe_contigs_path_dict[1][rev_path[0]].append((
+                    tuple(rev_path[1:]), "Rmate", valid_count, None
+                ))
+
+                valid_mate_pairs[s].add(t)
+                valid_mate_pairs[t].add(s)
                 total_paths_found += 1
 
-                # 反向路径
-                reversed_path = list(reversed(path))
-                rev_score = score  
-                pe_contigs_path_dict[1][reversed_path[0]].append((
-                    tuple(reversed_path[1:]), "Rmate", rev_score, None
-                ))
-
     logger.info(f"Found {total_paths_found} PE support path instances.")
-    return pe_contigs_path_dict, valid_mate_pairs
+    return pe_contigs_path_dict, dict(valid_mate_pairs)
 
 def get_weighted_cov(G, in_nodes:list, out_nodes:list, t: str, max_k_val: int):
     """
@@ -708,14 +778,12 @@ def get_supports(G: nx.DiGraph, in_nodes: list, out_nodes: list):
     return pe_support_dict.get((in_nodes[-1], out_nodes[0]), 0)
 
 
-def get_edge_cost(G, in_nodes:list, out_nodes:list, in_score:int, out_score:int, in_vec, out_vec, max_k: int):
+def get_edge_cost(G, in_nodes:list, out_nodes:list, in_score:int, out_score:int, in_vec, out_vec,support, max_k: int):
     # 注意：函数签名不再包含 pe_support_dict
     
     in_cov = get_weighted_cov(G, in_nodes, out_nodes, t='in', max_k_val = max_k)
     out_cov = get_weighted_cov(G, in_nodes, out_nodes, t='out', max_k_val = max_k)
     
-    # 内部调用 get_supports，它会从 G.graph 中查找数据
-    support = get_supports(G, in_nodes, out_nodes) 
 
     cost = (1 - (np.sqrt(in_score * out_score))) + \
            (1 - cosine_similarity(in_vec.reshape(1, -1), out_vec.reshape(1, -1))[0][0]) + \
@@ -728,15 +796,15 @@ def get_shortest(args_array):
     """ Worker function for getting shortest path to each node in parallel
     """
 
-    node, path_dict,SEQS,G, paths_list = args_array
+    node, path_dict,node_score_dict,node_vec_dict,node_support_dict,SEQS,G = args_array
     shortest_score = float("inf")
     path = None
     use_contig = False
-
+    paths_list = []
 
     for pred in G.predecessors(node):
         try:
-            path_len,shortest_path,use = dijkstra_path(G,path_dict,SEQS,source=node,target=pred, weight='cost',bidirectional=True)
+            path_len,shortest_path,use = dijkstra_path(G,path_dict,node_score_dict,node_vec_dict,node_support_dict,SEQS,source=node,target=pred, weight='cost',bidirectional=True)
             
             # logger.info(f"shortest_path:  {str(folded_path)}")
             if path_len < shortest_score:
@@ -747,16 +815,32 @@ def get_shortest(args_array):
             continue
     # logger.info(f"add shortest path: {path}")
     if path is not None: paths_list.append((path,shortest_score,use_contig))
+    return paths_list
     # done
 
 
-def enum_high_mass_shortest_paths(G,path_dict,SEQS, use_scores=False, use_genes=False, seen_paths=None, max_k=77):
+def enum_high_mass_shortest_paths(G,pool,path_dict,node_gene_set,node_score_dict,node_vec_dict,node_support_dict,SEQS, use_scores=False, use_genes=False, seen_paths=None, max_k=77,batch_size=200):
     """ given component subgraph, returns list of paths that
         - is non-redundant (includes) no repeats of same cycle
         - includes shortest paths starting at each node n (assigning
         node weights to be 1/(length * coverage)) to each of
         its predecessors, and returning to n
     """
+    current_nodes = set(G.nodes())  # 当前连通分量的所有节点
+
+    def get_canonical_path(path):
+        rev_path = tuple(rc_node(node) for node in reversed(path))
+        forward_exists = all(node in current_nodes for node in path)
+        reverse_exists = all(node in current_nodes for node in rev_path)
+        
+        if forward_exists and reverse_exists:
+            return path if path <= rev_path else rev_path
+        elif forward_exists:
+            return path
+        elif reverse_exists:
+            return rev_path
+        
+
     if seen_paths == None:
         seen_paths = []
     unq_sorted_paths = set([])
@@ -770,42 +854,63 @@ def enum_high_mass_shortest_paths(G,path_dict,SEQS, use_scores=False, use_genes=
     # use add_edge to assign edge weights to be 1/mass of starting node
     # TODO: only calculate these if they haven't been/need to be updated
     for e in G.edges():
-        if use_genes and G.nodes[e[1]]['gene'] == True:
-            G.add_edge(e[0], e[1], cost = 0.0)
-        elif use_scores==True:
-           G.add_edge(e[0], e[1], cost = get_edge_cost(G, e[0], e[1], G.nodes[e[0]]['score'], G.nodes[e[1]]['score'],G.nodes[e[0]]['freq_vec'], G.nodes[e[1]]['freq_vec'],max_k=max_k))
-        else:
-            G.add_edge(e[0], e[1], cost = (1./get_spades_base_mass(G, e[1])))
+        # if use_genes and G.nodes[e[1]]['gene'] == True:
+        #     G.add_edge(e[0], e[1], cost = 0.0)
+        # elif use_scores==True:
+           G.add_edge(e[0], e[1], cost = get_edge_cost(G, e[0], e[1], node_score_dict[canonicalize(e[0])], node_score_dict[canonicalize(e[1])],\
+                                                       node_vec_dict[canonicalize(e[0])], node_vec_dict[canonicalize(e[1])],node_support_dict.get((e[0],e[1]),0),max_k=max_k))
+        # else:
+            # G.add_edge(e[0], e[1], cost = (1./get_spades_base_mass(G, e[1])))
     valid_path_starts = set(path_dict[0].keys())
     logger.info("Getting shortest paths")
-    nodes = [n for n in G.nodes() if get_cov_from_spades_name_and_graph(n,G) >= 1 and (get_length_from_spades_name(n) >= 1000 \
+    nodes = [n for n in current_nodes if get_cov_from_spades_name_and_graph(n,G) >= 1 and (get_length_from_spades_name(n) >= 1000 \
              or n in valid_path_starts\
-             or G.nodes[n].get('gene', False) is True)
+             or n in node_gene_set)
             ]
+    
+    batches = [nodes[i:i + batch_size] for i in range(0, len(nodes), batch_size)]
+
+    # 构造 args_list：每个元素是一个批次
+    args_list = [
+        (batch, path_dict, node_score_dict, node_vec_dict, node_support_dict, SEQS, G)
+        for batch in batches
+    ]
+
+    # --- 执行：并行或串行 ---
+    try:
+        num_proc = getattr(pool, '_processes', 1)
+        use_parallel = (pool is not None) and (num_proc > 1)
+    except:
+        use_parallel = False
+
+    if use_parallel and num_proc <= 2 * len(batches):  # 注意：现在是 len(batches)
+        results = pool.map(get_shortest_batch, args_list)
+    else:
+        results = [get_shortest_batch(args) for args in args_list]
+
+    # --- 合并结果 ---
     paths_list = []
-
-    for node in nodes:
-        get_shortest([node,path_dict,SEQS,G,paths_list])
-
+    for res in results:
+        if res:
+            paths_list.extend(res)
 
     paths_list.sort(key=sort_key)
+    # --- 去重（结合 seen_paths）---
 
-    for path,weight,use_contig in paths_list:
-        # below: create copy of path with each node as rc version
-        # use as unique representation of a path and rc of its whole
-        unoriented_sorted_path_str = get_unoriented_sorted_str(path)
-
-        # here we avoid considering cyclic rotations of identical paths
-        # by sorting their string representations
-        # and comparing against the set already stored
-        if unoriented_sorted_path_str not in unq_sorted_paths:
-            unq_sorted_paths.add(unoriented_sorted_path_str)
-            paths.append((path,weight,use_contig))
-
-    return paths
+    final_paths = []
+    for path_tuple, weight, use_contig in paths_list:
+        # 生成无向路径字符串用于去重
+        path_tuple = get_canonical_path(path_tuple)
+        unoriented_str = get_unoriented_sorted_str(path_tuple)
+        if unoriented_str not in unq_sorted_paths:
+            unq_sorted_paths.add(unoriented_str)
+            final_paths.append((path_tuple, weight, use_contig))
 
 
-def get_high_mass_shortest_path(node,G,path_dict,proxy_contig_dict,SEQS,use_scores,use_genes,max_k):
+    return final_paths
+
+
+def get_high_mass_shortest_path(node,G,path_dict,proxy_contig_dict,node_score_dict,node_vec_dict,node_support_dict,SEQS,use_scores,use_genes,max_k):
     """ Return the shortest circular path back to node
     """
     # rc_node_hit used to determine whether use node or rc_node(node) to find plasmid gene hit cycle
@@ -814,12 +919,13 @@ def get_high_mass_shortest_path(node,G,path_dict,proxy_contig_dict,SEQS,use_scor
     # twice if there are two potential plasmid nodes in it
 
     for e in G.edges():
-        if use_genes and G.nodes[e[1]]['gene'] == True:
-            G.add_edge(e[0], e[1], cost = 0.0)
-        elif use_scores == True:
-            G.add_edge(e[0], e[1], cost = get_edge_cost(G, e[0], e[1], G.nodes[e[0]]['score'], G.nodes[e[1]]['score'],G.nodes[e[0]]['freq_vec'], G.nodes[e[1]]['freq_vec'],max_k=max_k))
-        else:
-            G.add_edge(e[0], e[1], cost = (1./get_spades_base_mass(G, e[1])))
+        # if use_genes and G.nodes[e[1]]['gene'] == True:
+        #     G.add_edge(e[0], e[1], cost = 0.0)
+        # elif use_scores == True:
+            G.add_edge(e[0], e[1], cost = get_edge_cost(G, e[0], e[1], node_score_dict[canonicalize(e[0])], node_score_dict[canonicalize(e[1])],\
+                                                        node_vec_dict[canonicalize(e[0])], node_vec_dict[canonicalize(e[1])],node_support_dict.get((e[0],e[1]),0),max_k=max_k))
+        # else:
+            # G.add_edge(e[0], e[1], cost = (1./get_spades_base_mass(G, e[1])))
 
     shortest_score = float("inf")
     path = None
@@ -834,7 +940,7 @@ def get_high_mass_shortest_path(node,G,path_dict,proxy_contig_dict,SEQS,use_scor
                     if proxy not in G.nodes(): continue
                     for pred in G.predecessors(proxy):
                         try:
-                            length, path, through_contig = dijkstra_path(G,path_dict,SEQS,source=proxy,target=pred, weight='cost')
+                            length, path, through_contig = dijkstra_path(G,path_dict,node_score_dict,node_vec_dict,node_support_dict,SEQS,source=proxy,target=pred, weight='cost')
                             if length < shortest_score:
                                 shortest_path = tuple(path)
                                 shortest_score = length
@@ -844,7 +950,7 @@ def get_high_mass_shortest_path(node,G,path_dict,proxy_contig_dict,SEQS,use_scor
                             continue
     for pred in G.predecessors(node):
         try:
-            length, path, through_contig = dijkstra_path(G,path_dict,SEQS,source=node,target=pred, weight='cost')
+            length, path, through_contig = dijkstra_path(G,path_dict,node_score_dict,node_vec_dict,node_support_dict,SEQS,source=node,target=pred, weight='cost')
             if length < shortest_score:
                 shortest_path = tuple(path)
                 shortest_score = length
@@ -960,8 +1066,9 @@ def is_good_cyc(path, valid_mate_pairs):
         return False
     return True
     
-def process_component(COMP, G, max_k, min_length, max_CV, SEQS, all_path_dict,node_to_contig,contigs_path_name_dict,
-                      all_proxy_contig_dict, valid_pairs, use_scores=False, use_genes=False, num_procs=1):
+def process_component(COMP, G,pool, max_k, min_length, max_CV, SEQS, path_dict,node_to_contig,contigs_path_name_dict,
+                      proxy_contig_dict, valid_pairs,node_score_dict,node_gene_set,node_vec_dict,node_support_dict,
+                      use_scores=False, use_genes=False, num_procs=1):
     """ run recycler for a single component of the graph
         use multiprocessing to process components in parallel
     """
@@ -970,14 +1077,11 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, all_path_dict,no
     path_count = 0
     seen_unoriented_paths = set([])
     paths_set = set([]) #the set of paths found
-    
-    # preprocess conitg path
-    path_dict =  get_native_path_dict(COMP, all_path_dict)
-    proxy_contig_dict = get_native_proxy_path_dict(COMP, all_proxy_contig_dict)
+
 
     # looking for paths starting from the nodes annotated with plasmid genes
     if use_genes:
-        plasmid_gene_nodes = get_plasmid_gene_nodes(COMP)
+        plasmid_gene_nodes = get_plasmid_gene_nodes(COMP,node_gene_set)
         potential_plasmid_mass_tuples = [(get_spades_base_mass(COMP,nd),nd) for nd in plasmid_gene_nodes]
         potential_plasmid_mass_tuples.sort(
             key=lambda n: (n[0], 0 if n[1][-1] == "'" else 1)
@@ -988,14 +1092,14 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, all_path_dict,no
             logger.info(f"plasmid gene hit node: {top_node_name}")
             # 初始化rc_node的相关信息
             rc_length, rc_path,rc_use_contig,rc_path_CV = float("inf"), None, False,float("inf")
-            length, path,use_contig = get_high_mass_shortest_path(top_node_name,COMP,path_dict,proxy_contig_dict,SEQS,use_scores,use_genes,max_k) #######
+            length, path,use_contig = get_high_mass_shortest_path(top_node_name,COMP,path_dict,proxy_contig_dict,node_score_dict,node_vec_dict,node_support_dict,SEQS,use_scores,use_genes,max_k) #######
             path_CV = float("inf")
             if path is not None:
                 path_CV = get_wgtd_path_coverage_CV(path,G,SEQS,max_k_val=max_k)
                 logger.info(f"plasmid gene path: {path}")
                 logger.info(f"CV: {path_CV}, Good: {is_good_cyc(path,valid_pairs)}, weight: {length}, use_contig: {use_contig}")
             if rc_node(top_node_name) in plasmid_gene_nodes:
-                rc_length, rc_path,rc_use_contig = get_high_mass_shortest_path(rc_node(top_node_name),COMP,path_dict,proxy_contig_dict,SEQS,use_scores,use_genes,max_k)
+                rc_length, rc_path,rc_use_contig = get_high_mass_shortest_path(rc_node(top_node_name),COMP,path_dict,proxy_contig_dict,node_score_dict,node_vec_dict,node_support_dict,SEQS,use_scores,use_genes,max_k)
                 if rc_path is not None:
                     rc_path_CV = get_wgtd_path_coverage_CV(rc_path,G,SEQS,max_k_val=max_k)
                     logger.info(f"RC plasmid gene path: {rc_path}") 
@@ -1045,7 +1149,7 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, all_path_dict,no
             
         # then look for circular paths that start from hi confidence plasmid nodes
     if use_scores:
-        potential_plasmid_nodes = get_hi_conf_plasmids(COMP)
+        potential_plasmid_nodes = get_hi_conf_plasmids(COMP,node_score_dict)
         potential_plasmid_mass_tuples = [(get_spades_base_mass(COMP,nd),nd) for nd in potential_plasmid_nodes]
         potential_plasmid_mass_tuples.sort(
             key=lambda n: (n[0], 0 if n[1][-1] == "'" else 1)
@@ -1055,7 +1159,7 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, all_path_dict,no
             top_node_name = top_node[1]
             logger.info(f"Hi conf node: {top_node_name}")
             rc_length, rc_path,rc_use_contig,rc_path_CV = float("inf"), None, False,float("inf")
-            length, path,use_contig = get_high_mass_shortest_path(top_node_name,COMP,path_dict,proxy_contig_dict,SEQS,use_scores,use_genes,max_k) #######
+            length, path,use_contig = get_high_mass_shortest_path(top_node_name,COMP,path_dict,proxy_contig_dict,node_score_dict,node_vec_dict,node_support_dict,SEQS,use_scores,use_genes,max_k) #######
             path_CV = float("inf")
             if path is not None:
                 path_CV = get_wgtd_path_coverage_CV(path,G,SEQS,max_k_val=max_k)
@@ -1063,7 +1167,7 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, all_path_dict,no
                 logger.info(f"CV: {path_CV}, Good: {is_good_cyc(path,valid_pairs)}, weight: {length}, use_contig: {use_contig}")
                 
             if rc_node(top_node_name) in potential_plasmid_nodes:
-                rc_length, rc_path,rc_use_contig = get_high_mass_shortest_path(rc_node(top_node_name),COMP,path_dict,proxy_contig_dict,SEQS,use_scores,use_genes,max_k)
+                rc_length, rc_path,rc_use_contig = get_high_mass_shortest_path(rc_node(top_node_name),COMP,path_dict,proxy_contig_dict,node_score_dict,node_vec_dict,node_support_dict,SEQS,use_scores,use_genes,max_k)
                 if rc_path is not None:
                     rc_path_CV = get_wgtd_path_coverage_CV(rc_path,G,SEQS,max_k_val=max_k)
                     logger.info(f"RC Hi conf path: {rc_path}")
@@ -1112,7 +1216,7 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, all_path_dict,no
 #######################################################################################
 
 
-    paths = enum_high_mass_shortest_paths(COMP,path_dict ,SEQS,use_scores,use_genes,seen_unoriented_paths,max_k)
+    paths = enum_high_mass_shortest_paths(COMP,pool,path_dict,node_gene_set,node_score_dict,node_vec_dict,node_support_dict,SEQS,use_scores,use_genes,seen_unoriented_paths,max_k)
     last_path_count = 0
     last_node_count = 0
 
@@ -1191,7 +1295,7 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, all_path_dict,no
         # recalculate paths on the component
         print(str(len(COMP.nodes())) + " nodes remain in component")
         logger.info("Remaining nodes: %d" % (len(COMP.nodes())))
-        paths = enum_high_mass_shortest_paths(COMP,path_dict,SEQS, use_scores,use_genes,seen_unoriented_paths,max_k)
+        paths = enum_high_mass_shortest_paths(COMP,pool,path_dict,node_gene_set,node_score_dict,node_vec_dict,node_support_dict,SEQS, use_scores,use_genes,seen_unoriented_paths,max_k)
 
     # #end while
     st = time.time()
@@ -1384,7 +1488,7 @@ def get_score_from_path(path,SEQS,max_k=77,num_procs=1):
         sys.stdout = devnull
         sys.stderr = devnull
         try:
-            print("predict score for path")
+            # print("predict score for path")
             c = plasclass.plasclass()
             seqs = get_seq_from_path(path,SEQS,max_k)
             prob = c.classify(seqs)
@@ -1550,13 +1654,13 @@ def transfer_to_fullname(node:str, id_dict):
     else:
         sys.exit(f"contig path file format error: {node} must end with '+' or '-' ")
 
-def dijkstra_path(G, path_dict:dict,SEQS, source, target, weight='weight',bidirectional=False):
+def dijkstra_path(G, path_dict:dict,node_score_dict,node_vec_dict,node_support_dict,SEQS, source, target, weight='weight',bidirectional=False):
 
 
-    (length, path,use_contig) = single_source_dijkstra(G, path_dict,SEQS ,source, target=target,weight=weight,bidirectional=bidirectional)
+    (length, path,use_contig) = single_source_dijkstra(G, path_dict,node_score_dict,node_vec_dict,node_support_dict,SEQS ,source, target=target,weight=weight,bidirectional=bidirectional)
     return length,path,use_contig
 
-def single_source_dijkstra(G, path_dict,SEQS,source, target=None, cutoff=None,
+def single_source_dijkstra(G, path_dict,node_score_dict,node_vec_dict,node_support_dict,SEQS,source, target=None, cutoff=None,
                            weight='weight',bidirectional=False,max_k_val=77):
     use_contig = None
     if not source:
@@ -1587,7 +1691,7 @@ def single_source_dijkstra(G, path_dict,SEQS,source, target=None, cutoff=None,
                     cur_path = {path[-1] : [source]+path}
                     if all(node in node_set for node in path):
                         
-                        finaldist, finalpath, target_info = _dijkstra_multisource(G, path_dict,SEQS,[[source]+path,[score, freq_vec] ], weight_lambda, paths=cur_path,
+                        finaldist, finalpath, target_info = _dijkstra_multisource(G, path_dict,node_score_dict,node_vec_dict,node_support_dict,SEQS,[[source]+path,[score, freq_vec] ], weight_lambda, paths=cur_path,
                                     cutoff=cutoff, target=target)
                         # else:
                         #     finaldist, finalpath,_, target_info = bidirectional_dijkstra(G, path_dict,SEQS,source, target,weight,max_k_val=max_k_val)
@@ -1596,8 +1700,8 @@ def single_source_dijkstra(G, path_dict,SEQS,source, target=None, cutoff=None,
                             u_score, u_freq_vec = target_record
                         else:
                             assert len(target) == 1
-                            u_score, u_freq_vec = G.nodes[target[0]]['score'], G.nodes[target[0]]['freq_vec']
-                        finaldist+= get_edge_cost(G, target, [source]+path, u_score, score, u_freq_vec, freq_vec, max_k_val)
+                            u_score, u_freq_vec = node_score_dict[canonicalize(target[0])],node_vec_dict[canonicalize(target[0])]
+                        finaldist+= get_edge_cost(G, target, [source]+path, u_score, score, u_freq_vec, freq_vec,node_support_dict.get((target[-1],source),0), max_k_val)
                         # add first contig to final path
 
                     else:
@@ -1617,15 +1721,15 @@ def single_source_dijkstra(G, path_dict,SEQS,source, target=None, cutoff=None,
     if final_path is None:
         # finaldist, finalpath, through_contig= bidirectional_dijkstra(G, path_dict,SEQS,source, target,weight,max_k_val=max_k_val)
         cur_path = {source:[source]}
-        finaldist, finalpath, target_info= _dijkstra_multisource(G, path_dict,SEQS,[[source],None], weight_lambda, paths=cur_path,
+        finaldist, finalpath, target_info= _dijkstra_multisource(G, path_dict,node_score_dict,node_vec_dict,node_support_dict,SEQS,[[source],None], weight_lambda, paths=cur_path,
                                  cutoff=cutoff, target=target)
         target, target_record, _ = target_info
         if target_record is not None:
             u_score, u_freq_vec = target_record
         else:
             assert len(target) == 1
-            u_score, u_freq_vec = G.nodes[target[0]]['score'], G.nodes[target[0]]['freq_vec']
-        finaldist+= get_edge_cost(G, target, [source], u_score, G.nodes[source]['score'], u_freq_vec, G.nodes[source]['freq_vec'], max_k_val)
+            u_score, u_freq_vec = node_score_dict[canonicalize(target[0])], node_vec_dict[canonicalize(target[0])]
+        finaldist+= get_edge_cost(G, target, [source], u_score, node_score_dict[canonicalize(source)], u_freq_vec, node_vec_dict[canonicalize(source)],node_support_dict.get((target[-1],source),0), max_k_val)
         try:
             # logger.info(f"simple path: {sources[0]}--->{target}: {finalpath}, weight: {finaldist}")
             min_len = finaldist
@@ -1647,7 +1751,7 @@ def _weight_function(G, weight):
     return lambda u, v, data: data.get(weight, 1)
 
 
-def _dijkstra_multisource(G, path_dict: dict, SEQS, source, weight, pred=None, paths=None,
+def _dijkstra_multisource(G, path_dict: dict,node_score_dict,node_vec_dict,node_support_dict, SEQS, source, weight, pred=None, paths=None,
                                 cutoff=None, target=None, max_k_val=77):
     """
     使用 Min-Max 松弛规则的 Dijkstra 风格路径搜索，寻找瓶颈最小的路径。
@@ -1710,10 +1814,10 @@ def _dijkstra_multisource(G, path_dict: dict, SEQS, source, weight, pred=None, p
                     
                     
                     # 获取节点评分/向量信息
-                    v_score, v_vec = cur_record if cur_record is not None else (G.nodes[v[0]]['score'], G.nodes[v[0]]['freq_vec'])
+                    v_score, v_vec = cur_record if cur_record is not None else (node_score_dict[canonicalize(v[0])], node_vec_dict[canonicalize(v[0])])
                     
                     # 边 (v, Contig Path) 的 Cost (瓶颈权重)
-                    cost = get_edge_cost(G, v, [u_start_node] + u_path, v_score, u_score, v_vec, u_vec, max_k_val)
+                    cost = get_edge_cost(G, v, [u_start_node] + u_path, v_score, u_score, v_vec, u_vec,node_support_dict.get((v[-1], u_start_node),0), max_k_val)
                     
                     # **Min-Max 松弛规则**
                     # vu_dist = max(dist[v[-1]], cost) 
@@ -1749,11 +1853,11 @@ def _dijkstra_multisource(G, path_dict: dict, SEQS, source, weight, pred=None, p
         # ----------------------------------------------------
         if not through_contig:
             for u, e in G_succ[v[-1]].items():
-                u_score, u_vec = G.nodes[u]['score'], G.nodes[u]['freq_vec']
-                v_score, v_vec = cur_record if cur_record is not None else (G.nodes[v[0]]['score'], G.nodes[v[0]]['freq_vec'])
+                u_score, u_vec = node_score_dict[canonicalize(u)], node_vec_dict[canonicalize(u)]
+                v_score, v_vec = cur_record if cur_record is not None else (node_score_dict[canonicalize(v[0])], node_vec_dict[canonicalize(v[0])])
                 
                 # 边 (v, u) 的 Cost (瓶颈权重)
-                cost = get_edge_cost_from_graph(G, v, [u], v_score, u_score, v_vec, u_vec, max_k_val)
+                cost = get_edge_cost_from_graph(G, v, [u], v_score, u_score, v_vec, u_vec,node_support_dict.get((v[-1],u),0), max_k_val)
                 
                 # **Min-Max 松弛规则**
                 # vu_dist = max(dist[v[-1]], cost) 
@@ -1821,7 +1925,7 @@ def get_total_len_from_path(path, max_k_val, cycle=False):
 
 
 def add_contig_to_path_dict(
-    G, scores_dict, path_dict, contigs_path_name_dict,
+    G, scores_dict, node_score_dict,node_gene_set,path_dict, contigs_path_name_dict,
     node_to_contig, use_genes=True, use_scores=True
 ):
     # Step 1: 预计算每个 contig 中节点的位置
@@ -1833,9 +1937,9 @@ def add_contig_to_path_dict(
     # Step 2: 确定高置信节点
     plasmid_nodes = set()
     if use_genes:
-        plasmid_nodes.update(get_plasmid_gene_nodes(G))
+        plasmid_nodes.update(get_plasmid_gene_nodes(G,node_gene_set))
     if use_scores:
-        plasmid_nodes.update(get_hi_conf_plasmids(G))
+        plasmid_nodes.update(get_hi_conf_plasmids(G,node_score_dict))
 
     # Step 3: 遍历每个高置信节点
     for node in plasmid_nodes:
@@ -2035,33 +2139,42 @@ def remove_tail_self_loop(path):
     
     return path
 
-def get_edge_cost_from_graph(G, from_path, to_path, from_score, to_score, from_vec, to_vec, max_k_val):
+def get_edge_cost_from_graph(G, from_path, to_path, from_score, to_score, from_vec, to_vec,support, max_k_val):
     # normal edge
     if(len(from_path) == 1 and len(to_path) == 1):
         return G[from_path[0]][to_path[0]]['cost']
     # through contig path
     else:
-        return get_edge_cost(G, from_path, to_path, from_score, to_score, from_vec, to_vec, max_k_val)
+        return get_edge_cost(G, from_path, to_path, from_score, to_score, from_vec, to_vec,support, max_k_val)
     
 def get_native_path_dict(COMP, contigs_path_dict):
-    path_dict = [{},{}]
-    for k in (0, 1):
-        for node, info_list in list(contigs_path_dict[k].items()):  # 使用list()创建副本以安全地修改原字典
-            if node not in COMP.nodes():
-                continue
-            for idx, (path, name, s, pre,freq_vec) in enumerate(info_list):
-                if all(nd in COMP for nd in path):
-                    path_dict[k].setdefault(node, []).append((path, name, s, pre,freq_vec))
+    comp_nodes = set(COMP.nodes())  
+    path_dict = [{}, {}]
+
+    for node, info_list in contigs_path_dict[0].items():
+        if node not in comp_nodes:
+            continue
+        filtered = []
+        for path, name, s, pre, freq_vec in info_list:
+            if all(nd in comp_nodes for nd in path):  
+                filtered.append((path, name, s, pre, freq_vec))
+        if filtered:
+            path_dict[0][node] = filtered
     return path_dict
 
+
 def get_native_proxy_path_dict(COMP, all_proxy_path_dict):
+    comp_nodes = set(COMP.nodes()) 
     proxy_path_dict = {}
-    for node, info_list in list(all_proxy_path_dict.items()):  # 使用list()创建副本以安全地修改原字典
-            if node not in COMP.nodes():
-                continue
-            for idx, (path, name, s, pre,freq_vec) in enumerate(info_list):
-                if all(nd in COMP for nd in path):
-                    proxy_path_dict.setdefault(node, []).append((path, name, s, pre,freq_vec))
+    for node, info_list in all_proxy_path_dict.items():
+        if node not in comp_nodes:
+            continue
+        filtered = []
+        for path, name, s, pre, freq_vec in info_list:
+            if all(nd in comp_nodes for nd in path):
+                filtered.append((path, name, s, pre, freq_vec))
+        if filtered:
+            proxy_path_dict[node] = filtered
     return proxy_path_dict
 
 def trim_path_tips_light(G, path):
@@ -2099,3 +2212,16 @@ def trim_path_tips_light(G, path):
         j -= 1
     
     return path[i:j+1]
+
+def canonicalize(nd: str):
+    return nd[:-1] if nd.endswith("'") else nd
+
+def get_shortest_batch(args):
+    batch_nodes, path_dict, node_score_dict, node_vec_dict, node_support_dict, SEQS, G = args
+    all_paths = []
+    for node in batch_nodes:
+        res_list = get_shortest((node, path_dict, node_score_dict, node_vec_dict, node_support_dict, SEQS, G))
+        if res_list:
+            for path_list, weight, use_contig in res_list:
+                all_paths.append((tuple(path_list), weight, use_contig))  
+    return all_paths

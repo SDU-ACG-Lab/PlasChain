@@ -149,7 +149,7 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
     
     pe_contigs_path_dict, valid_pairs = get_pe_support_evidence(G, bamfile, mean, std, max_k)
     pe_support_dict = build_pe_support_dict(pe_contigs_path_dict)
-    G.graph['pe_support_data'] = pe_support_dict
+    
     logger.info(f"get valid PE support consuming {time.time() - st} s")
 
     # logger.info("path_dict:\n")
@@ -158,21 +158,21 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
 
     # add a score to every node
     print(f"Annotate tetranucleotide frequency")
-    get_node_freq_vec(G,SEQS)
-    if use_scores:
-        print(f"Annotate score")
-        get_node_scores(scores_file,G)
+    node_vec_dict =  get_node_freq_vec(G,SEQS)
+    
+    print(f"Annotate score")
+    node_score_dict = get_node_scores(scores_file,G)
 
     # keep track of the nodes that have plasmid genes on them
-    if use_genes:
-        print(f"Annotate PSG")
-        get_gene_nodes(genes_file,G)
+ 
+    print(f"Annotate PSG")
+    node_gene_set = get_gene_nodes(genes_file,G)
 
     # add contig path with hi conf node as fisrt node
-    proxy_contig_dict =  add_contig_to_path_dict(G,scores_dict,path_dict,contigs_path_name_dict,node_to_contig,use_genes,use_scores)
+    proxy_contig_dict =  add_contig_to_path_dict(G,scores_dict,node_score_dict,node_gene_set,path_dict,contigs_path_name_dict,node_to_contig,use_genes,use_scores)
     # gets set of long simple loops, removes short
     # simple loops from graph
-    long_self_loops = get_long_self_loops(G, min_length, SEQS, bamfile, use_scores, use_genes, max_k)
+    long_self_loops = get_long_self_loops(G,node_score_dict,node_gene_set, min_length, SEQS, bamfile, use_scores, use_genes, max_k)
 
     for nd in long_self_loops:
         name = get_spades_type_name(path_count, nd,
@@ -180,8 +180,8 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
         path_count += 1
 
         seq = get_seq_from_path(nd, SEQS, max_k_val=max_k)
-        print(nd)
-        print(" ")
+        # print(nd)
+        # print(" ")
         if len(seq)>=min_length:
             f_cycs_fasta.write(">" + name + "\n" + seq + "\n")
             f_long_self_loops.write(">" + name + "\n" + seq + "\n")
@@ -189,7 +189,7 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
              str(get_num_from_spades_name(nd[0])) + "\n")
     
     # 获取强连通分支
-    remove_hi_confidence_chromosome(G,node_to_contig)
+    remove_hi_confidence_chromosome(G,node_to_contig,node_score_dict)
     comps = [G.subgraph(c).copy() for c in nx.strongly_connected_components(G)]
 
     # # 删除hi conf chromosome 后，再更新强连通分支
@@ -207,7 +207,7 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
     ###################################
 
     #multiprocessing to find shortest paths
-    # pool = mp.Pool(num_procs)
+    pool = mp.Pool(num_procs)
 
     print("================== Added paths ====================")
     logger.info("================== Added paths ====================")
@@ -220,7 +220,7 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
     all_comps = len(comps)
     processed_comps = 0
     merge_cost = 0
-    before_merge_path_count=0
+
     # 创建一个排序key后排序，确保每次结果一致
     for c in sorted(comps, key=lambda c: (len(c.nodes()), component_sort_key(c))):
         # logger.info(f"start processing {processed_comps}")
@@ -228,7 +228,8 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
 	    # check if any nodes in comp in visited nodes
         # if so continue
         # logger.info(f"cur comp has nodes: {str(c.nodes())}")
-        for node in c.nodes():
+        nodes =  set(c.nodes())
+        for node in nodes:
              # 如果节点已经被访问，说明其对应的反向互补的强连通分支已经处理过，直接退出当前循环
              if node in VISITED_NODES:
                 logger.info(f"{node} had been visited ,pass {processed_comps}/ {all_comps}")
@@ -242,15 +243,26 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
         # COMP = c.to_directed()
         COMP=c
     
-        rc_nodes = [rc_node(n) for n in COMP.nodes()]
-        # logger.info(f"add {str(rc_nodes)}")
-        # logger.info(f"add {str(COMP.nodes())}")
-        VISITED_NODES.update(COMP.nodes())
-        VISITED_NODES.update(rc_nodes)
-        # 核心函数
+        rc_set = {rc_node(n) for n in nodes}
+        extended_nodes = set(nodes) | rc_set
+        VISITED_NODES.update(extended_nodes)
+
+        comp_path_dict =  get_native_path_dict(COMP, path_dict)
+        comp_proxy_path_dict = get_native_proxy_path_dict(COMP,proxy_contig_dict)
+        comp_score_dict = {n: node_score_dict[n] for n in extended_nodes if n in node_score_dict}
+        comp_gene_set  = set(n  for n in extended_nodes if n in node_gene_set)
+        comp_vec_dict   = {n: node_vec_dict[n]   for n in extended_nodes if n in node_vec_dict}
+        comp_support_dict = {
+        (u, v): pe_support_dict[u][v]
+        for u in pe_support_dict
+        if u in extended_nodes
+        for v in pe_support_dict[u]
+        if v in extended_nodes
+    }
+            # 核心函数
         # 参数的前三个， COMP当前强连通分支， G原图，用于计算原图(包含dead end)中的discounted coverage
-        path_set, merge_time = process_component(COMP, G ,max_k, min_length, max_CV, SEQS, path_dict,node_to_contig,contigs_path_name_dict,proxy_contig_dict
-                                                                       ,valid_pairs,use_scores, use_genes, num_procs)
+        path_set, merge_time = process_component(COMP, G ,pool,max_k, min_length, max_CV, SEQS, comp_path_dict,node_to_contig,contigs_path_name_dict,comp_proxy_path_dict
+                                                                       ,valid_pairs,comp_score_dict,comp_gene_set,comp_vec_dict,comp_support_dict,use_scores, use_genes, num_procs)
         merge_cost+=merge_time
         for p in path_set:
             name = get_spades_type_name(path_count, p[0], SEQS, max_k, G, p[1])
