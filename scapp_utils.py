@@ -867,8 +867,10 @@ def enum_high_mass_shortest_paths(G,pool,path_dict,node_gene_set,node_score_dict
              or n in valid_path_starts\
              or n in node_gene_set)
             ]
-    
-    batches = [nodes[i:i + batch_size] for i in range(0, len(nodes), batch_size)]
+    remain_nodes = len(nodes)
+    print(str(remain_nodes) + " nodes remain in component")
+    logger.info("Remaining nodes: %d" % (remain_nodes))
+    batches = [nodes[i:i + batch_size] for i in range(0, remain_nodes, batch_size)]
 
     # 构造 args_list：每个元素是一个批次
     args_list = [
@@ -883,9 +885,11 @@ def enum_high_mass_shortest_paths(G,pool,path_dict,node_gene_set,node_score_dict
     except:
         use_parallel = False
 
-    if use_parallel and num_proc <= 2 * len(batches):  # 注意：现在是 len(batches)
+    if use_parallel and len(batches)>1:  # 注意：现在是 len(batches)
+        logger.info(f"use multi precessor with {len(batches)} batches)")
         results = pool.map(get_shortest_batch, args_list)
     else:
+        logger.info(f"use single precessor")
         results = [get_shortest_batch(args) for args in args_list]
 
     # --- 合并结果 ---
@@ -1293,8 +1297,8 @@ def process_component(COMP, G,pool, max_k, min_length, max_CV, SEQS, path_dict,n
                         seen_unoriented_paths.add(get_unoriented_sorted_str(curr_path))
 
         # recalculate paths on the component
-        print(str(len(COMP.nodes())) + " nodes remain in component")
-        logger.info("Remaining nodes: %d" % (len(COMP.nodes())))
+        # print(str(len(COMP.nodes())) + " nodes remain in component")
+        # logger.info("Remaining nodes: %d" % (len(COMP.nodes())))
         paths = enum_high_mass_shortest_paths(COMP,pool,path_dict,node_gene_set,node_score_dict,node_vec_dict,node_support_dict,SEQS, use_scores,use_genes,seen_unoriented_paths,max_k)
 
     # #end while

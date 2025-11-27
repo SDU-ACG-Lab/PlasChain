@@ -140,7 +140,7 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
     # remove dead end to trim contig path
     remove_dead_ends(original_comp)
     
-    print(f"get contig path which is longer than {min_contig_path_len}")
+    print(f"get contig path which is longer than {min_contig_path_len}, 当前进程 PID: {os.getpid()}")
     path_dict,contigs_path_name_dict, node_to_contig, scores_dict= get_contig_path(path_file, id_to_fullname,SEQS,original_comp,contig_path_ofile,contig_path_score_ofile,min_contig_path_len=min_contig_path_len,max_k=max_k,num_procs=num_procs)
     print(f"estimate insert size")
     mean, std = estimate_insert_size_distribution(bamfile)
@@ -207,7 +207,7 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
     ###################################
 
     #multiprocessing to find shortest paths
-    pool = mp.Pool(num_procs)
+    pool = mp.Pool(min(num_procs, 8))
 
     print("================== Added paths ====================")
     logger.info("================== Added paths ====================")
@@ -278,6 +278,8 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
         print(f"{processed_comps}/ {all_comps} have been processed...")
     logger.info(f"merge cycle consumes {merge_cost} seconds")
 
+    pool.close()
+    pool.join()
     f_cycs_fasta.close()
     f_cyc_paths.close()
     f_long_self_loops.close()
