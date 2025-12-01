@@ -261,11 +261,11 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
     }
             # 核心函数
         # 参数的前三个， COMP当前强连通分支， G原图，用于计算原图(包含dead end)中的discounted coverage
-        path_set, merge_time = process_component(COMP, G ,pool,max_k, min_length, max_CV, SEQS, comp_path_dict,node_to_contig,contigs_path_name_dict,comp_proxy_path_dict
+        paths_set, merge_time = process_component(COMP, G ,pool,max_k, min_length, max_CV, SEQS, comp_path_dict,node_to_contig,contigs_path_name_dict,comp_proxy_path_dict
                                                                        ,valid_pairs,comp_score_dict,comp_gene_set,comp_vec_dict,comp_support_dict,use_scores, use_genes, num_procs)
         merge_cost+=merge_time
-        for p in path_set:
-            name = get_spades_type_name(path_count, p[0], SEQS, max_k, G, p[1])
+        for p in paths_set:
+            name = get_spades_type_name(path_count, p[0], SEQS, max_k, G, p[1])+"_"+p[2]
             seq = get_seq_from_path(p[0], SEQS, max_k_val=max_k)
             # print(p[0])
             # print(" ")

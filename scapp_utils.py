@@ -863,7 +863,7 @@ def enum_high_mass_shortest_paths(G,pool,path_dict,node_gene_set,node_score_dict
             # G.add_edge(e[0], e[1], cost = (1./get_spades_base_mass(G, e[1])))
     valid_path_starts = set(path_dict[0].keys())
     logger.info("Getting shortest paths")
-    nodes = [n for n in current_nodes if get_cov_from_spades_name_and_graph(n,G) >= 1 and (get_length_from_spades_name(n) >= 1000 \
+    nodes = [n for n in current_nodes if node_score_dict[canonicalize(n)] >= 0.5 and (get_length_from_spades_name(n) >= 1000 \
              or n in valid_path_starts\
              or n in node_gene_set)
             ]
@@ -1140,7 +1140,7 @@ def process_component(COMP, G,pool, max_k, min_length, max_CV, SEQS, path_dict,n
                 # COMP 利用上述coverage更新自己的coverage
                 update_path_with_covs(path, COMP, covs)
                 path_count += 1
-                paths_set.add((path,before_cov))
+                paths_set.add((path,before_cov,"high_conf"))
 
                 # 更新contig path information
                 path_dict = get_native_path_dict(COMP, path_dict)
@@ -1205,7 +1205,7 @@ def process_component(COMP, G,pool, max_k, min_length, max_CV, SEQS, path_dict,n
                 covs = update_path_coverage_vals(path, G, SEQS, max_k)
                 update_path_with_covs(path, COMP, covs)
                 path_count += 1
-                paths_set.add((path,before_cov))
+                paths_set.add((path,before_cov,"high_conf"))
                 # 更新contig path information
                 path_dict = get_native_path_dict(COMP, path_dict)
                 proxy_contig_dict = get_native_proxy_path_dict(COMP, proxy_contig_dict)
@@ -1218,7 +1218,6 @@ def process_component(COMP, G,pool, max_k, min_length, max_CV, SEQS, path_dict,n
         # match the required thresholds
 #######################################################################################
 #######################################################################################
-
 
     paths = enum_high_mass_shortest_paths(COMP,pool,path_dict,node_gene_set,node_score_dict,node_vec_dict,node_support_dict,SEQS,use_scores,use_genes,seen_unoriented_paths,max_k)
     last_path_count = 0
@@ -1280,7 +1279,7 @@ def process_component(COMP, G,pool, max_k, min_length, max_CV, SEQS, path_dict,n
                     covs = update_path_coverage_vals(curr_path, G, SEQS, max_k)
                     update_path_with_covs(curr_path, COMP, covs)
                     path_count += 1
-                    paths_set.add((tuple(curr_path), before_cov))
+                    paths_set.add((tuple(curr_path), before_cov,"remaining"))
 
                     # 更新contig path information，这里只需要更新path_dict
                     path_dict = get_native_path_dict(COMP, path_dict)
@@ -1300,7 +1299,6 @@ def process_component(COMP, G,pool, max_k, min_length, max_CV, SEQS, path_dict,n
         # print(str(len(COMP.nodes())) + " nodes remain in component")
         # logger.info("Remaining nodes: %d" % (len(COMP.nodes())))
         paths = enum_high_mass_shortest_paths(COMP,pool,path_dict,node_gene_set,node_score_dict,node_vec_dict,node_support_dict,SEQS, use_scores,use_genes,seen_unoriented_paths,max_k)
-
     # #end while
     st = time.time()
     # path_set_before_merge = paths_set.copy()
@@ -1310,7 +1308,7 @@ def process_component(COMP, G,pool, max_k, min_length, max_CV, SEQS, path_dict,n
     # merged_paths_set = paths_set
     ed = time.time()
     merge_time = ed - st
-    return merged_paths_set, merge_time
+    return merged_paths_set, merge_time,
     
 def merge_cycle(paths_set:set,SEQS,max_k,node_to_contig,contigs_path_name_dict,valid_mate_pairs):
     #记录原有set规模，如果有合并，则规模改变
@@ -1323,12 +1321,12 @@ def merge_cycle(paths_set:set,SEQS,max_k,node_to_contig,contigs_path_name_dict,v
         merged_in_this_iteration = False
 
         for i in range(len(sorted_paths_list)):
-            cur_path,cur_cov  = sorted_paths_list[i]
+            cur_path,cur_cov, cur_path_type  = sorted_paths_list[i]
             cur_set = set(cur_path)
             cur_score = score_dict[(cur_path,cur_cov)]
 
             for j in range(i+1, len(sorted_paths_list)):
-                other_path, other_cov = sorted_paths_list[j]
+                other_path, other_cov,other_path_type = sorted_paths_list[j]
                 original_other_path = other_path
                 other_set = set(other_path)
                 other_score = score_dict[(other_path,other_cov)]
@@ -1376,11 +1374,11 @@ def merge_cycle(paths_set:set,SEQS,max_k,node_to_contig,contigs_path_name_dict,v
                             
 
                         if merged_score >= 0.5:
-                            paths_set.add((merged_path,merged_cov))
+                            paths_set.add((merged_path,merged_cov,str(cur_path_type+other_path_type)))
                             score_dict[(merged_path,merged_cov)] = merged_score
                             #删除原有path
-                            paths_set.remove((cur_path,cur_cov))
-                            paths_set.remove((original_other_path,other_cov))
+                            paths_set.remove((cur_path,cur_cov,cur_path_type))
+                            paths_set.remove((original_other_path,other_cov,other_path_type))
                             score_dict.pop((cur_path,cur_cov))
                             score_dict.pop((original_other_path,other_cov))
                             merged_in_this_iteration = True
@@ -1408,11 +1406,11 @@ def merge_cycle(paths_set:set,SEQS,max_k,node_to_contig,contigs_path_name_dict,v
                             logger.info(f"other: cov: {other_cov}, score: {other_score}")
                             merged_cov  = (cur_cov + other_cov)/2
                             logger.info(f"merged_path: {merged_path} \ncov: {merged_cov}, score: {merged_score}")
-                            paths_set.add((merged_path,merged_cov))
+                            paths_set.add((merged_path,merged_cov,str(cur_path_type+other_path_type)))
                             score_dict[(merged_path,merged_cov)] = merged_score
                             #删除原有path
-                            paths_set.remove((cur_path,cur_cov))
-                            paths_set.remove((original_other_path,other_cov))
+                            paths_set.remove((cur_path,cur_cov,cur_path_type))
+                            paths_set.remove((original_other_path,other_cov,other_path_type))
                             score_dict.pop((cur_path,cur_cov))
                             score_dict.pop((original_other_path,other_cov))
                             merged_in_this_iteration = True
@@ -1428,14 +1426,14 @@ def merge_cycle(paths_set:set,SEQS,max_k,node_to_contig,contigs_path_name_dict,v
              
     good_paths_set = set()
 
-    for path, cov in paths_set:
+    for path, cov, path_type in paths_set:
         if is_good_cyc(path,valid_mate_pairs):
-            good_paths_set.add((path,cov))   
+            good_paths_set.add((path,cov,path_type))   
     return  good_paths_set
 
 def get_score_from_set(paths_set: set, SEQs,max_k=77):
     score_dict = {}
-    for path,cov in paths_set:
+    for path,cov,_ in paths_set:
         score = get_score_from_path(path,SEQs,max_k=max_k)
         score_dict[(path,cov)] = score
         # rc_p = rc_path(path)
