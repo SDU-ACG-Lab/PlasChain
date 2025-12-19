@@ -23,6 +23,21 @@ complements = {'A':'T', 'C':'G', 'G':'C', 'T':'A'}
 logger = logging.getLogger("scapp_logger")
 
 
+worker_data = {}
+
+def init_worker(path_dict, node_score_dict, node_vec_dict, node_support_dict, SEQS, G):
+    """
+    这个函数会在每个 Worker 启动时执行一次。
+    它接收主进程传来的最新 G，并存入自己的全局变量。
+    """
+    global worker_data
+    worker_data['G'] = G
+    worker_data['SEQS'] = SEQS
+    worker_data['scores'] = node_score_dict
+    worker_data['path'] = path_dict
+    worker_data['vec'] = node_vec_dict
+    worker_data['support'] = node_support_dict
+
 def readfq(fp): # this is a generator function
     """ # lh3's fast fastX reader:
         https://github.com/lh3/readfq/blob/master/readfq.py
@@ -163,7 +178,7 @@ def update_node_coverage(G, node, new_cov):
     """
     if node not in G.nodes(): # nothing to be done, perhaps already removed
         return
-    if new_cov == 0:
+    if new_cov <1e-9:
         G.remove_node(node)
         logger.info(f"remove {node}")
         if rc_node(node) in G.nodes():
@@ -176,7 +191,7 @@ def update_node_coverage(G, node, new_cov):
 def get_spades_base_mass(G, name):
     length = get_length_from_spades_name(name)
     coverage = get_cov_from_spades_name_and_graph(name,G)
-    if coverage <= 0.0: coverage = 1.0/float(length) # ensure no division by zero, consider more principled way to do this
+    if coverage <= 1e-9: coverage = 1.0/float(length) # ensure no division by zero, consider more principled way to do this
     return length * coverage
 
 def get_seq_from_path(path, seqs, max_k_val=77, cycle=True):
@@ -270,19 +285,35 @@ def get_discounted_node_cov_optimized(node, path, G):
     # 如果节点是路径的起点或终点，它可能只有前驱或后继
     return (disc_cov_pred + disc_cov_succ) / 2.0
 
-def get_path_covs(path,G,discount=False):
+def get_path_covs(path, G, discount=False):
     cnts = {}
     if discount:
-        covs = [get_discounted_node_cov(n,path,G) for n in path]
-        # discount weight of nodes that path passes through multiple times
+        # 1. 先统计节点出现次数
         cnts = get_node_cnts_hist(path)
-        for i in range(len(path)):
-            p = path[i]
-            pos_name = p if (p[-1]!="'") else p[:-1]
-            if cnts[pos_name] > 1:
-                covs[i] /= cnts[pos_name]
+        
+        # 2. 使用缓存避免重复计算昂贵的锚点搜索
+        # 即使路径很长，唯一节点数通常不多
+        node_cov_cache = {} 
+        covs = []
+        
+        for n in path:
+            # 规范化节点名用于缓存键值（正负链共享同一个物理覆盖度）
+            pos_name = n if (n[-1] != "'") else n[:-1]
+            
+            if pos_name not in node_cov_cache:
+                # 只计算一次
+                raw_anchored_cov = calc_anchored_cov(n, path, G)
+                
+                # 在这里直接做除法，存入缓存
+                if cnts[pos_name] > 1:
+                    node_cov_cache[pos_name] = raw_anchored_cov / cnts[pos_name]
+                else:
+                    node_cov_cache[pos_name] = raw_anchored_cov
+            
+            covs.append(node_cov_cache[pos_name])
+            
     else:
-        covs = [get_cov_from_spades_name_and_graph(n,G) for n in path]
+        covs = [get_cov_from_spades_name_and_graph(n, G) for n in path]
 
     return covs
 
@@ -299,6 +330,7 @@ def get_path_mean_std(path, G, seqs, max_k_val=77,discount=True):
 def update_path_coverage_vals(path, G, seqs, max_k_val=77,):
     mean, _ = get_path_mean_std(path, G, seqs, max_k_val) ## NOTE: CAN WE STILL GUARANTEE CONVERGENCE WHEN DISCOUNTING COVERAGE ??!
     covs = get_path_covs(path,G)
+    discounted_covs = get_path_covs(path,G,True)
     # 如果 repeat的discount_cov过低会拉低整体的mean,此时剥离一个cycle时，不一定能去掉(打断)一个环，不能保证收敛，
     # 后续寻找cycle时，这些cov几近为0但score很高的node会提供错误的信息，误导cycle的寻找
     new_covs = []
@@ -320,10 +352,11 @@ def update_path_coverage_vals(path, G, seqs, max_k_val=77,):
             new_covs.append(covs[i]- mean*cnts[pos_name])
         else:
             new_covs.append(covs[i]-mean)
-    logger.info("Path: %s Mean: %s Covs: %s" % (str(path),str(mean),str(covs) ))
+    
+    logger.info("Path: %s Mean: %s Covs: %s DisCountedCovs: %s" % (str(path),str(mean),str(covs),str(discounted_covs) ))
     logger.info("NewCovs: %s" % (str(new_covs)))
     for i in range(len(path)):
-        if new_covs[i] > 0:
+        if new_covs[i] > 1e-9:
             update_node_coverage(G,path[i],new_covs[i])
         else:
             update_node_coverage(G,path[i],0)
@@ -331,7 +364,7 @@ def update_path_coverage_vals(path, G, seqs, max_k_val=77,):
 
 def update_path_with_covs(path, G, covs):
     for i in range(len(path)):
-        if covs[i] > 0:
+        if covs[i] > 1e-9:
             update_node_coverage(G,path[i],covs[i])
         else:
             update_node_coverage(G,path[i],0)
@@ -704,21 +737,46 @@ def get_pe_support_evidence(G, bamfile, insert_mean, insert_std, max_k=77, max_h
     return pe_contigs_path_dict, dict(valid_mate_pairs)
 
 def get_weighted_cov(G, in_nodes:list, out_nodes:list, t: str, max_k_val: int):
-    """
-    计算节点在有向图 G 中的加权覆盖率（基于出边或入边的权重）。
-    """
+
     def get_contig_path_mean(path, G, max_k_val=77,discount=True):
-        covs = np.array(get_path_covs(path,G,discount))
-        wgts = np.array([(get_length_from_spades_name(n)-max_k_val) for n in path])
-        tot_len = get_total_len_from_path(path,max_k_val=max_k_val)
-        if tot_len<=0: return 0
-        wgts = np.multiply(wgts, 1./tot_len)
-        mean = np.average(covs, weights = wgts)
-        return mean
+
+        if not path:
+            return 0.0
+            
+        covs = []
+        lengths = []
+        
+        for node in path:
+            # 获取原始覆盖度（不需要锚点折算，因为我们看的是节点本身的丰度）
+            c = get_cov_from_spades_name_and_graph(node, G)
+            # 获取有效长度 (len - k + 1)
+            l = get_length_from_spades_name(node) - max_k_val + 1
+            if l < 1: l = 1
+            
+            covs.append(c)
+            lengths.append(l)
+            
+        
+        covs = np.array(covs)
+        lengths = np.array(lengths)
+        
+      
+        sorted_indices = np.argsort(covs)
+        sorted_covs = covs[sorted_indices]
+        sorted_weights = lengths[sorted_indices]
+        
+
+        cumsum_weights = np.cumsum(sorted_weights)
+        total_weight = cumsum_weights[-1]
+        
+
+        median_idx = np.searchsorted(cumsum_weights, total_weight / 2.0)
+        
+        return sorted_covs[median_idx]
+    
     if t not in ["in", "out"]:
         raise ValueError("type must be 'in' or 'out'")
     
-    # 安全处理输入
     def to_node_list(x):
         return [x] if isinstance(x, str) else list(x)
     
@@ -779,7 +837,7 @@ def get_supports(G: nx.DiGraph, in_nodes: list, out_nodes: list):
 
 
 def get_edge_cost(G, in_nodes:list, out_nodes:list, in_score:int, out_score:int, in_vec, out_vec,support, max_k: int):
-    # 注意：函数签名不再包含 pe_support_dict
+   
     
     in_cov = get_weighted_cov(G, in_nodes, out_nodes, t='in', max_k_val = max_k)
     out_cov = get_weighted_cov(G, in_nodes, out_nodes, t='out', max_k_val = max_k)
@@ -795,7 +853,7 @@ def get_edge_cost(G, in_nodes:list, out_nodes:list, in_score:int, out_score:int,
 def get_shortest(args_array):
     """ Worker function for getting shortest path to each node in parallel
     """
-
+    
     node, path_dict,node_score_dict,node_vec_dict,node_support_dict,SEQS,G = args_array
     shortest_score = float("inf")
     path = None
@@ -819,7 +877,7 @@ def get_shortest(args_array):
     # done
 
 
-def enum_high_mass_shortest_paths(G,pool,path_dict,node_gene_set,node_score_dict,node_vec_dict,node_support_dict,SEQS, use_scores=False, use_genes=False, seen_paths=None, max_k=77,batch_size=200):
+def enum_high_mass_shortest_paths(G,path_dict,node_gene_set,node_score_dict,node_vec_dict,node_support_dict,SEQS, use_scores=False, use_genes=False, seen_paths=None, max_k=77,batch_size=200,num_procs=8):
     """ given component subgraph, returns list of paths that
         - is non-redundant (includes) no repeats of same cycle
         - includes shortest paths starting at each node n (assigning
@@ -863,7 +921,7 @@ def enum_high_mass_shortest_paths(G,pool,path_dict,node_gene_set,node_score_dict
             # G.add_edge(e[0], e[1], cost = (1./get_spades_base_mass(G, e[1])))
     valid_path_starts = set(path_dict[0].keys())
     logger.info("Getting shortest paths")
-    nodes = [n for n in current_nodes if node_score_dict[canonicalize(n)] >= 0.5 and (get_length_from_spades_name(n) >= 1000 \
+    nodes = [n for n in current_nodes if (get_length_from_spades_name(n) >= 1000 \
              or n in valid_path_starts\
              or n in node_gene_set)
             ]
@@ -871,26 +929,26 @@ def enum_high_mass_shortest_paths(G,pool,path_dict,node_gene_set,node_score_dict
     print(str(remain_nodes) + " nodes remain in component")
     logger.info("Remaining nodes: %d" % (remain_nodes))
     batches = [nodes[i:i + batch_size] for i in range(0, remain_nodes, batch_size)]
+    
 
-    # 构造 args_list：每个元素是一个批次
-    args_list = [
-        (batch, path_dict, node_score_dict, node_vec_dict, node_support_dict, SEQS, G)
-        for batch in batches
-    ]
+    use_parallel = True if num_procs >1 else False 
 
-    # --- 执行：并行或串行 ---
-    try:
-        num_proc = getattr(pool, '_processes', 1)
-        use_parallel = (pool is not None) and (num_proc > 1)
-    except:
-        use_parallel = False
-
-    if use_parallel and len(batches)>1:  # 注意：现在是 len(batches)
+    if use_parallel and len(batches)>1:
+        local_pool = mp.Pool(
+            processes=num_procs, 
+            initializer=init_worker, 
+            initargs=(path_dict, node_score_dict, node_vec_dict, node_support_dict, SEQS, G)
+        )
         logger.info(f"use multi precessor with {len(batches)} batches)")
-        results = pool.map(get_shortest_batch, args_list)
+        try:
+            results = local_pool.map(get_shortest_batch, batches)
+        finally:
+            local_pool.close()
+            local_pool.join()
     else:
         logger.info(f"use single precessor")
-        results = [get_shortest_batch(args) for args in args_list]
+        init_worker(path_dict, node_score_dict, node_vec_dict, node_support_dict, SEQS, G)
+        results = [get_shortest_batch(batch) for batch in batches]
 
     # --- 合并结果 ---
     paths_list = []
@@ -901,17 +959,20 @@ def enum_high_mass_shortest_paths(G,pool,path_dict,node_gene_set,node_score_dict
     paths_list.sort(key=sort_key)
     # --- 去重（结合 seen_paths）---
 
+    path_to_seed_dict = defaultdict(list)
+
     final_paths = []
-    for path_tuple, weight, use_contig in paths_list:
+    for path_tuple, weight, use_contig, seed in paths_list:
         # 生成无向路径字符串用于去重
         path_tuple = get_canonical_path(path_tuple)
         unoriented_str = get_unoriented_sorted_str(path_tuple)
+        path_to_seed_dict[path_tuple].append(seed)
         if unoriented_str not in unq_sorted_paths:
             unq_sorted_paths.add(unoriented_str)
             final_paths.append((path_tuple, weight, use_contig))
 
 
-    return final_paths
+    return final_paths, path_to_seed_dict
 
 
 def get_high_mass_shortest_path(node,G,path_dict,proxy_contig_dict,node_score_dict,node_vec_dict,node_support_dict,SEQS,use_scores,use_genes,max_k):
@@ -1070,7 +1131,7 @@ def is_good_cyc(path, valid_mate_pairs):
         return False
     return True
     
-def process_component(COMP, G,pool, max_k, min_length, max_CV, SEQS, path_dict,node_to_contig,contigs_path_name_dict,
+def process_component(COMP, G, max_k, min_length, max_CV, SEQS, path_dict,node_to_contig,contigs_path_name_dict,
                       proxy_contig_dict, valid_pairs,node_score_dict,node_gene_set,node_vec_dict,node_support_dict,
                       use_scores=False, use_genes=False, num_procs=1):
     """ run recycler for a single component of the graph
@@ -1140,7 +1201,7 @@ def process_component(COMP, G,pool, max_k, min_length, max_CV, SEQS, path_dict,n
                 # COMP 利用上述coverage更新自己的coverage
                 update_path_with_covs(path, COMP, covs)
                 path_count += 1
-                paths_set.add((path,before_cov,"high_conf"))
+                paths_set.add((path,before_cov,"high_conf",(path[0],)))
 
                 # 更新contig path information
                 path_dict = get_native_path_dict(COMP, path_dict)
@@ -1205,7 +1266,7 @@ def process_component(COMP, G,pool, max_k, min_length, max_CV, SEQS, path_dict,n
                 covs = update_path_coverage_vals(path, G, SEQS, max_k)
                 update_path_with_covs(path, COMP, covs)
                 path_count += 1
-                paths_set.add((path,before_cov,"high_conf"))
+                paths_set.add((path,before_cov,"high_conf",(path[0],)))
                 # 更新contig path information
                 path_dict = get_native_path_dict(COMP, path_dict)
                 proxy_contig_dict = get_native_proxy_path_dict(COMP, proxy_contig_dict)
@@ -1219,7 +1280,7 @@ def process_component(COMP, G,pool, max_k, min_length, max_CV, SEQS, path_dict,n
 #######################################################################################
 #######################################################################################
 
-    paths = enum_high_mass_shortest_paths(COMP,pool,path_dict,node_gene_set,node_score_dict,node_vec_dict,node_support_dict,SEQS,use_scores,use_genes,seen_unoriented_paths,max_k)
+    paths, seed_to_path = enum_high_mass_shortest_paths(COMP,path_dict,node_gene_set,node_score_dict,node_vec_dict,node_support_dict,SEQS,use_scores,use_genes,seen_unoriented_paths,max_k,num_procs)
     last_path_count = 0
     last_node_count = 0
 
@@ -1279,7 +1340,7 @@ def process_component(COMP, G,pool, max_k, min_length, max_CV, SEQS, path_dict,n
                     covs = update_path_coverage_vals(curr_path, G, SEQS, max_k)
                     update_path_with_covs(curr_path, COMP, covs)
                     path_count += 1
-                    paths_set.add((tuple(curr_path), before_cov,"remaining"))
+                    paths_set.add((curr_path, before_cov,"remaining",tuple(seed_to_path[curr_path])))
 
                     # 更新contig path information，这里只需要更新path_dict
                     path_dict = get_native_path_dict(COMP, path_dict)
@@ -1298,7 +1359,7 @@ def process_component(COMP, G,pool, max_k, min_length, max_CV, SEQS, path_dict,n
         # recalculate paths on the component
         # print(str(len(COMP.nodes())) + " nodes remain in component")
         # logger.info("Remaining nodes: %d" % (len(COMP.nodes())))
-        paths = enum_high_mass_shortest_paths(COMP,pool,path_dict,node_gene_set,node_score_dict,node_vec_dict,node_support_dict,SEQS, use_scores,use_genes,seen_unoriented_paths,max_k)
+        paths, seed_to_path = enum_high_mass_shortest_paths(COMP,path_dict,node_gene_set,node_score_dict,node_vec_dict,node_support_dict,SEQS, use_scores,use_genes,seen_unoriented_paths,max_k,num_procs)
     # #end while
     st = time.time()
     # path_set_before_merge = paths_set.copy()
@@ -1321,12 +1382,12 @@ def merge_cycle(paths_set:set,SEQS,max_k,node_to_contig,contigs_path_name_dict,v
         merged_in_this_iteration = False
 
         for i in range(len(sorted_paths_list)):
-            cur_path,cur_cov, cur_path_type  = sorted_paths_list[i]
+            cur_path,cur_cov, cur_path_type,cur_path_seeds  = sorted_paths_list[i]
             cur_set = set(cur_path)
             cur_score = score_dict[(cur_path,cur_cov)]
 
             for j in range(i+1, len(sorted_paths_list)):
-                other_path, other_cov,other_path_type = sorted_paths_list[j]
+                other_path, other_cov,other_path_type, other_path_seeds = sorted_paths_list[j]
                 original_other_path = other_path
                 other_set = set(other_path)
                 other_score = score_dict[(other_path,other_cov)]
@@ -1374,11 +1435,11 @@ def merge_cycle(paths_set:set,SEQS,max_k,node_to_contig,contigs_path_name_dict,v
                             
 
                         if merged_score >= 0.5:
-                            paths_set.add((merged_path,merged_cov,str(cur_path_type+other_path_type)))
+                            paths_set.add((merged_path,merged_cov,str(cur_path_type+other_path_type), cur_path_seeds+other_path_seeds))
                             score_dict[(merged_path,merged_cov)] = merged_score
                             #删除原有path
-                            paths_set.remove((cur_path,cur_cov,cur_path_type))
-                            paths_set.remove((original_other_path,other_cov,other_path_type))
+                            paths_set.remove((cur_path,cur_cov,cur_path_type,cur_path_seeds))
+                            paths_set.remove((original_other_path,other_cov,other_path_type,other_path_seeds))
                             score_dict.pop((cur_path,cur_cov))
                             score_dict.pop((original_other_path,other_cov))
                             merged_in_this_iteration = True
@@ -1406,11 +1467,11 @@ def merge_cycle(paths_set:set,SEQS,max_k,node_to_contig,contigs_path_name_dict,v
                             logger.info(f"other: cov: {other_cov}, score: {other_score}")
                             merged_cov  = (cur_cov + other_cov)/2
                             logger.info(f"merged_path: {merged_path} \ncov: {merged_cov}, score: {merged_score}")
-                            paths_set.add((merged_path,merged_cov,str(cur_path_type+other_path_type)))
+                            paths_set.add((merged_path,merged_cov,str(cur_path_type+other_path_type),cur_path_seeds+other_path_seeds))
                             score_dict[(merged_path,merged_cov)] = merged_score
                             #删除原有path
-                            paths_set.remove((cur_path,cur_cov,cur_path_type))
-                            paths_set.remove((original_other_path,other_cov,other_path_type))
+                            paths_set.remove((cur_path,cur_cov,cur_path_type,cur_path_seeds))
+                            paths_set.remove((original_other_path,other_cov,other_path_type,other_path_seeds))
                             score_dict.pop((cur_path,cur_cov))
                             score_dict.pop((original_other_path,other_cov))
                             merged_in_this_iteration = True
@@ -1426,14 +1487,14 @@ def merge_cycle(paths_set:set,SEQS,max_k,node_to_contig,contigs_path_name_dict,v
              
     good_paths_set = set()
 
-    for path, cov, path_type in paths_set:
+    for path, cov, path_type, seeds in paths_set:
         if is_good_cyc(path,valid_mate_pairs):
-            good_paths_set.add((path,cov,path_type))   
+            good_paths_set.add((path,cov,path_type,seeds))   
     return  good_paths_set
 
 def get_score_from_set(paths_set: set, SEQs,max_k=77):
     score_dict = {}
-    for path,cov,_ in paths_set:
+    for path,cov,_ ,_ in paths_set:
         score = get_score_from_path(path,SEQs,max_k=max_k)
         score_dict[(path,cov)] = score
         # rc_p = rc_path(path)
@@ -2218,12 +2279,135 @@ def trim_path_tips_light(G, path):
 def canonicalize(nd: str):
     return nd[:-1] if nd.endswith("'") else nd
 
-def get_shortest_batch(args):
-    batch_nodes, path_dict, node_score_dict, node_vec_dict, node_support_dict, SEQS, G = args
+def get_shortest_batch(batch_nodes):
+
+    G = worker_data['G']
+    SEQS = worker_data['SEQS']
+    node_score_dict = worker_data['scores']
+    path_dict = worker_data['path']
+    node_vec_dict = worker_data['vec']
+    node_support_dict = worker_data['support']
+
     all_paths = []
     for node in batch_nodes:
         res_list = get_shortest((node, path_dict, node_score_dict, node_vec_dict, node_support_dict, SEQS, G))
         if res_list:
             for path_list, weight, use_contig in res_list:
-                all_paths.append((tuple(path_list), weight, use_contig))  
+                all_paths.append((tuple(path_list), weight, use_contig,node))  
     return all_paths
+
+
+def calc_anchored_cov(node, path, G, max_depth=20):
+    """
+    计算节点的折算覆盖度 (最小流量法)。
+    核心思想：路径的覆盖度受限于上下游最窄的瓶颈（木桶效应）。
+    """
+    if node not in G: return 0.0
+    
+    node_cov = get_cov_from_spades_name_and_graph(node, G) # 适配你的 get_cov 函数
+    path_set = set(path) # 假设已处理 RC
+    
+    # --- 辅助函数：计算某节点在特定方向上的有效路径流量 ---
+    def get_path_flow(anchor, direction):
+        if direction == 'pred':
+            # 作为下游，看上游(Predecessors)有多少流量进来
+            neighbors = list(G.predecessors(anchor))
+        else:
+            # 作为上游，看下游(Successors)有多少流量流出
+            neighbors = list(G.successors(anchor))
+            
+        total_cov = sum(get_cov_from_spades_name_and_graph(n, G) for n in neighbors)
+        if total_cov <= 1e-9: return 0.0
+        
+        # 只累加流向/来自 Path 的邻居的覆盖度
+        path_flow = sum(get_cov_from_spades_name_and_graph(n, G) for n in neighbors if n in path_set)
+        
+        # 这里有一个关键点：
+        # 如果是单纯的线性连接，Flow = Neighbor_Cov。
+        # 如果是分叉/汇合，Flow = 分支流量。
+        return path_flow
+
+    # ==========================================
+    # 1. 向上游寻找流量瓶颈 (Upstream Flow)
+    # ==========================================
+    upstream_flow = float('inf')
+    curr = node
+    
+    # 如果当前节点就是 Contig 起点(无前驱)，那上游流量就是自身
+    if G.in_degree(curr) == 0:
+        upstream_flow = node_cov
+    else:
+        for _ in range(max_depth):
+            preds = list(G.predecessors(curr))
+            
+            # 停止条件 A: 遇到汇合点 (Merge Point)
+            # 此时我们要看这个汇合点给当前路径贡献了多少
+            if len(preds) != 1:
+                upstream_flow = get_path_flow(curr, 'pred')
+                break
+                
+            prev = preds[0]
+            
+            # 停止条件 B: 上一个是分叉点 (Split Point)
+            # 意味着上游在分流，我们要看分给我们的这一支有多少
+            if G.out_degree(prev) != 1:
+                # 注意：这里我们计算 prev 的 output flow (succs)，
+                # 理论上应该等于 curr 的 input flow。
+                # 直接用 curr 的 input flow 计算更简单且等价。
+                upstream_flow = get_path_flow(curr, 'pred')
+                break
+            
+            # 停止条件 C: 路径断裂
+            if prev not in path_set:
+                upstream_flow = get_path_flow(curr, 'pred')
+                break
+                
+            curr = prev
+        else:
+            # 超过深度，默认信任当前节点的输入
+            upstream_flow = get_path_flow(node, 'pred')
+
+    # ==========================================
+    # 2. 向下游寻找流量瓶颈 (Downstream Flow)
+    # ==========================================
+    downstream_flow = float('inf')
+    curr = node
+    
+    if G.out_degree(curr) == 0:
+        downstream_flow = node_cov
+    else:
+        for _ in range(max_depth):
+            succs = list(G.successors(curr))
+            
+            # 停止条件 A: 遇到分叉点 (Split Point)
+            # 我们要看这个点分给路径多少
+            if len(succs) != 1:
+                downstream_flow = get_path_flow(curr, 'succ')
+                break
+            
+            next_n = succs[0]
+            
+            # 停止条件 B: 下一个是汇合点 (Merge Point)
+            # 我们流向了一个大熔炉，我们的贡献由当前的输出决定
+            if G.in_degree(next_n) != 1:
+                downstream_flow = get_path_flow(curr, 'succ')
+                break
+                
+            if next_n not in path_set:
+                downstream_flow = get_path_flow(curr, 'succ')
+                break
+                
+            curr = next_n
+        else:
+            downstream_flow = get_path_flow(node, 'succ')
+
+    # ==========================================
+    # 3. 取最小值 (Min-Flow)
+    # ==========================================
+    # 逻辑：一条管子的最大流量取决于它最窄的地方
+    
+    # 修正 inf (如果未找到有效上/下游，说明没有瓶颈，取自身)
+    if upstream_flow == float('inf'): upstream_flow = node_cov
+    if downstream_flow == float('inf'): downstream_flow = node_cov
+    
+    return min(node_cov, upstream_flow, downstream_flow)
