@@ -220,7 +220,7 @@ def main():
 
     # Step 1: Map reads and create BAM file
     sorted_bam = os.path.join(int_dir, "reads_pe_primary.sort.bam")
-    if bamfile is None and os.path.exists(sorted_bam) ==False:
+    if bamfile is None:
         # first create fasta of contigs in only one direction
         time_start = time.time()
         logger.info('Creating fasta from fastg')
@@ -283,10 +283,7 @@ def main():
         time_end = time.time()
         logger.info("{} seconds to create indexed sorted bam file".format(
             time_end-time_start))
-    else:
-        if bamfile is None:
-            bamfile = sorted_bam
-        logger.info("Using file {} as the bamfile".format(bamfile))
+
 
     # Step 2: Classify contigs using PlasClass (default) and parse scores
     if use_scores and plasclass_file is None and plasflow_file is None:
@@ -326,7 +323,7 @@ def main():
     gene_hits_path = os.path.join(int_dir, "hit_seqs.out")
     genefiles_path = os.path.join(data_path,'nt')
     protfiles_path = os.path.join(data_path,'aa')
-    if use_genes and os.path.exists(gene_hits_path) == False:
+    if use_genes:
         print('Finding plasmid-specific genes with BLAST')
         time_start = time.time()
         logger.info('Finding plasmid-specific genes with BLAST')

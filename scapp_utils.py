@@ -776,12 +776,6 @@ def get_weighted_cov(G, in_nodes:list, out_nodes:list, t: str, max_k_val: int):
     
     if t not in ["in", "out"]:
         raise ValueError("type must be 'in' or 'out'")
-    
-    def to_node_list(x):
-        return [x] if isinstance(x, str) else list(x)
-    
-    in_nodes = to_node_list(in_nodes)
-    out_nodes = to_node_list(out_nodes)
 
     cov_in = get_cov_from_spades_name_and_graph(in_nodes[0], G) if len(in_nodes) == 1 else get_contig_path_mean(in_nodes,G,max_k_val)
     cov_out= get_cov_from_spades_name_and_graph(out_nodes[0], G) if len(out_nodes) == 1 else get_contig_path_mean(out_nodes,G,max_k_val)
@@ -837,7 +831,10 @@ def get_supports(G: nx.DiGraph, in_nodes: list, out_nodes: list):
 
 
 def get_edge_cost(G, in_nodes:list, out_nodes:list, in_score:int, out_score:int, in_vec, out_vec,support, max_k: int):
-   
+    def to_node_list(x):
+        return [x] if isinstance(x, str) else list(x)
+    in_nodes = to_node_list(in_nodes)
+    out_nodes = to_node_list(out_nodes)
     
     in_cov = get_weighted_cov(G, in_nodes, out_nodes, t='in', max_k_val = max_k)
     out_cov = get_weighted_cov(G, in_nodes, out_nodes, t='out', max_k_val = max_k)
@@ -846,9 +843,15 @@ def get_edge_cost(G, in_nodes:list, out_nodes:list, in_score:int, out_score:int,
     cost = (1 - (np.sqrt(in_score * out_score))) + \
            (1 - cosine_similarity(in_vec.reshape(1, -1), out_vec.reshape(1, -1))[0][0]) + \
            abs(in_cov - out_cov) / max(in_cov, out_cov) + \
-           (1 / (1 + support)) 
+           (1 / (1 + support))
            
-    return cost
+    # 用于打破 Dijkstra 的平局，优先选择正向
+    # 避免出现 1+，2+，3+，1-和 1+, 3-, 2- , 1- 结果的随机性
+    penalty = 0
+    if out_nodes[0].endswith("'"):
+        penalty = 1e-6
+    
+    return cost + penalty
 
 def get_shortest(args_array):
     """ Worker function for getting shortest path to each node in parallel
@@ -888,15 +891,32 @@ def enum_high_mass_shortest_paths(G,path_dict,node_gene_set,node_score_dict,node
 
     def get_canonical_path(path):
         rev_path = tuple(rc_node(node) for node in reversed(path))
-        forward_exists = all(node in current_nodes for node in path)
         reverse_exists = all(node in current_nodes for node in rev_path)
-        
-        if forward_exists and reverse_exists:
-            return path if path <= rev_path else rev_path
-        elif forward_exists:
-            return path
-        elif reverse_exists:
-            return rev_path
+        candidates = []
+        L = len(path)
+        if reverse_exists:
+            # 找到整个集合中 ID 最小的节点
+            min_node = min(path + rev_path)
+            # 收集所有以 min_node 开头的正向旋转
+            path_list = list(path)
+            for i in range(L):
+                if path_list[i] == min_node:
+                    candidates.append(tuple(path_list[i:] + path_list[:i]))
+
+            # 收集所有以 min_node 开头的反向旋转
+            rev_path_list = list(rev_path)
+            for i in range(L):
+                if rev_path_list[i] == min_node:
+                    candidates.append(tuple(rev_path_list[i:] + rev_path_list[:i]))
+
+        else:
+            min_node = min(path)
+            path_list = list(path)
+            for i in range(L):
+                if path_list[i] == min_node:
+                    candidates.append(tuple(path_list[i:] + path_list[:i]))
+         # 返回字典序最小的候选者
+        return min(candidates)
         
 
     if seen_paths == None:
@@ -956,21 +976,44 @@ def enum_high_mass_shortest_paths(G,path_dict,node_gene_set,node_score_dict,node
         if res:
             paths_list.extend(res)
 
-    paths_list.sort(key=sort_key)
+    # paths_list.sort(key=sort_key)
     # --- 去重（结合 seen_paths）---
+
+
 
     path_to_seed_dict = defaultdict(list)
 
-    final_paths = []
-    for path_tuple, weight, use_contig, seed in paths_list:
-        # 生成无向路径字符串用于去重
-        path_tuple = get_canonical_path(path_tuple)
-        unoriented_str = get_unoriented_sorted_str(path_tuple)
-        path_to_seed_dict[path_tuple].append(seed)
-        if unoriented_str not in unq_sorted_paths:
-            unq_sorted_paths.add(unoriented_str)
-            final_paths.append((path_tuple, weight, use_contig))
+    # final_paths = []
+    # for path_tuple, weight, use_contig, seed in paths_list:
+    #     # 生成无向路径字符串用于去重
+    #     path_tuple = get_canonical_path(path_tuple)
+    #     unoriented_str = get_unoriented_sorted_str(path_tuple)
+    #     path_to_seed_dict[path_tuple].append(seed)
+    #     if unoriented_str not in unq_sorted_paths:
+    #         unq_sorted_paths.add(unoriented_str)
+    #         final_paths.append((path_tuple, weight, use_contig))
+    # 修改去重逻辑
+    unq_path_best_map = {}  # 用于存储 {path_str: (path_data, weight)}
 
+    for path_tuple, weight, use_contig, seed in paths_list:
+        path_tuple_canon = get_canonical_path(path_tuple)
+        unoriented_str = get_unoriented_sorted_str(path_tuple_canon)
+        path_to_seed_dict[path_tuple_canon].append(seed)
+
+        # 如果当前环以及被剔除过了，则不考虑
+        if unoriented_str in unq_sorted_paths:
+            continue
+        # 如果是第一次见，或者新来的路径权重更高，则保留/更新
+        if path_tuple_canon not in unq_path_best_map:
+            unq_path_best_map[path_tuple_canon] = (path_tuple_canon, weight, use_contig)
+        else:
+            # 比较权重：如果新路径权重更高，替换掉旧的！
+            old_weight = unq_path_best_map[path_tuple_canon][1]
+            if weight < old_weight:
+                unq_path_best_map[path_tuple_canon] = (path_tuple_canon, weight, use_contig)
+
+    # 最后生成 final_paths
+    final_paths = list(unq_path_best_map.values())
 
     return final_paths, path_to_seed_dict
 
@@ -1295,7 +1338,7 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, path_dict,node_t
         path_tuples = []
         path_tuples_with_contig = []
         path_tuples_without_contig = []
-        for p,length,use_contig in paths:
+        for p,weight,use_contig in paths:
             # if len(get_seq_from_path(p, SEQS, max_k_val=max_k)) < min_length:
             if get_total_len_from_path(p,max_k_val=max_k,cycle=True) < min_length:
                 seen_unoriented_paths.add(get_unoriented_sorted_str(p))
@@ -1304,9 +1347,9 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, path_dict,node_t
             CV = get_wgtd_path_coverage_CV(p,G,SEQS,max_k_val=max_k)
             if CV > max_CV:continue
             if use_contig:
-                path_tuples_with_contig.append((CV, p,length,use_contig))
+                path_tuples_with_contig.append((CV, p,weight,use_contig))
             else:
-                path_tuples_without_contig.append((CV, p,length,use_contig))
+                path_tuples_without_contig.append((CV, p,weight,use_contig))
             
         if(len(path_tuples_with_contig) > 0):
             path_tuples = path_tuples_with_contig
@@ -1316,8 +1359,14 @@ def process_component(COMP, G, max_k, min_length, max_CV, SEQS, path_dict,node_t
             logger.info("Using %d paths without contig paths" % (len(path_tuples_without_contig)))
         if(len(path_tuples)==0): break
 
-        # 使用了contig path的优先，低CV作为第二排序依据
-        path_tuples.sort(key=lambda item: item[0])
+
+        # 先按 CV (升序)，然后按长度 (降序，长的优先),最后按weight降序
+        path_tuples.sort(key=lambda item: (item[0], -get_total_len_from_path(p,max_k), item[2]))
+
+        top_10 = path_tuples[:10]
+        for CV, p,weight,use_contig in top_10:
+            logger.info(f"path: {simplify_path(p)}\n weight: {weight}, CV: {CV}, used contig: {use_contig}, seed: {seed_to_path[p]}")
+
 
         # logger.info("candidate path:")
         # for cv,p,weight,use_contig in path_tuples:
@@ -1717,6 +1766,10 @@ def transfer_to_fullname(node:str, id_dict):
     else:
         sys.exit(f"contig path file format error: {node} must end with '+' or '-' ")
 
+def simplify_path(path: list):
+    return [get_num_from_spades_name(nd) + ('+' if nd[-1] != "'" else '-') for nd in path]
+
+
 def dijkstra_path(G, path_dict:dict,node_score_dict,node_vec_dict,node_support_dict,SEQS, source, target, weight='weight',bidirectional=False):
 
 
@@ -1853,6 +1906,7 @@ def _dijkstra_multisource(G, path_dict: dict,node_score_dict,node_vec_dict,node_
 
     while fringe:
         (d, length, _, (v, cur_record, used_contigs)) = pop(fringe)
+                
         
         # v[-1] 是当前路径的终点节点
         if v[-1] in dist:
@@ -1869,8 +1923,10 @@ def _dijkstra_multisource(G, path_dict: dict,node_score_dict,node_vec_dict,node_
         # ----------------------------------------------------
         # 1. 松弛操作：尝试走 contig path (Contig-Path-Contig)
         # ----------------------------------------------------
+        # neighbors = sorted(G_succ[v[-1]].items(), key=lambda x: x[0])
+        neighbors =  G_succ[v[-1]].items()
         through_contig = False
-        for u_start_node, e in G_succ[v[-1]].items():
+        for u_start_node, e in neighbors:
             if u_start_node in path_dict[0]:
                 for record in path_dict[0][u_start_node]:
                     u_path, u_contig_name, u_score, u_pre_contig, u_vec = record
@@ -1882,7 +1938,7 @@ def _dijkstra_multisource(G, path_dict: dict,node_score_dict,node_vec_dict,node_
                     # 边 (v, Contig Path) 的 Cost (瓶颈权重)
                     cost = get_edge_cost(G, v, [u_start_node] + u_path, v_score, u_score, v_vec, u_vec,node_support_dict.get((v[-1], u_start_node),0), max_k_val)
                     
-                    # **Min-Max 松弛规则**
+                   
                     # vu_dist = max(dist[v[-1]], cost) 
                     vu_dist = dist[v[-1]] + cost
                     
@@ -1891,7 +1947,7 @@ def _dijkstra_multisource(G, path_dict: dict,node_score_dict,node_vec_dict,node_
                     
                     u_end_node = u_path[-1] # Contig Path 的终点
 
-                    # 获取目标节点当前的 Min-Max 信息
+                    
                     current_minmax_cost, current_length = seen.get(u_end_node, (float('inf'), float('inf')))
 
                     # 比较规则: 
@@ -1915,21 +1971,21 @@ def _dijkstra_multisource(G, path_dict: dict,node_score_dict,node_vec_dict,node_
         # 2. 松弛操作：走普通边 (Contig-Contig)
         # ----------------------------------------------------
         if not through_contig:
-            for u, e in G_succ[v[-1]].items():
+            for u, e in neighbors:
                 u_score, u_vec = node_score_dict[canonicalize(u)], node_vec_dict[canonicalize(u)]
                 v_score, v_vec = cur_record if cur_record is not None else (node_score_dict[canonicalize(v[0])], node_vec_dict[canonicalize(v[0])])
                 
                 # 边 (v, u) 的 Cost (瓶颈权重)
                 cost = get_edge_cost_from_graph(G, v, [u], v_score, u_score, v_vec, u_vec,node_support_dict.get((v[-1],u),0), max_k_val)
                 
-                # **Min-Max 松弛规则**
+                
                 # vu_dist = max(dist[v[-1]], cost) 
                 vu_dist = dist[v[-1]] + cost
                 
                 # 新路径长度
                 new_length = length + 1
 
-                # 获取目标节点当前的 Min-Max 信息
+                
                 current_minmax_cost, current_length = seen.get(u, (float('inf'), float('inf')))
                 
                 # 比较规则 (同 Contig Path 比较)
@@ -2128,7 +2184,7 @@ def meet_criterion(path, G, SEQS,max_k, max_CV,valid_pairs):
     return get_wgtd_path_coverage_CV(path,G,SEQS,max_k_val=max_k) <= max_CV and is_good_cyc(path,valid_pairs)
 
 def sort_key(path):
-    return not path[2]
+    return path[0]
 
 def extract_node_id(node_label):
     """
