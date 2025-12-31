@@ -117,12 +117,14 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
     basename, _ = os.path.splitext(os.path.basename(fastg))
     fasta_ofile = os.path.join(outdir, basename+".cycs.fasta")
     cycs_ofile = os.path.join(outdir, basename+".cycs.paths.txt")
+    seed_ofile = os.path.join(outdir, basename+".cycs.seeds.txt")
     loop_ofile = os.path.join(outdir,basename+".self_loops.fasta")
     contig_path_ofile = os.path.join(outdir,basename+".contig.fasta")
     contig_path_score_ofile = os.path.join(outdir,basename+".contig.score.fasta")
 
     f_cycs_fasta = open(fasta_ofile, 'w') # output 1 - fasta of sequences
     f_cyc_paths = open(cycs_ofile, 'w') # output 2 - file containing path name (corr. to fasta),
+    f_cyc_seeds = open(seed_ofile, 'w')
     f_long_self_loops = open(loop_ofile,'w') # output 3 - file of self-loop fasta sequences
     bamfile = pysam.AlignmentFile(bampath)
 
@@ -186,8 +188,9 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
             f_cycs_fasta.write(">" + name + "\n" + seq + "\n")
             f_long_self_loops.write(">" + name + "\n" + seq + "\n")
             f_cyc_paths.write(name + "\n" +str(nd[0])+ "\n" +
-             str(get_num_from_spades_name(nd[0])) + "\n")
-    
+            str(get_num_from_spades_name(nd[0])) + "\n")
+            f_cyc_seeds.write(name + "\n" +str(nd[0])+ "\n" +
+            str(get_num_from_spades_name(nd[0])) + "\n")
     # 获取强连通分支
     remove_hi_confidence_chromosome(G,node_to_contig,node_score_dict)
     comps = [G.subgraph(c).copy() for c in nx.strongly_connected_components(G)]
@@ -263,14 +266,18 @@ def run_scapp(fastg, outdir, bampath, num_procs, max_k, \
                                                                        ,valid_pairs,comp_score_dict,comp_gene_set,comp_vec_dict,comp_support_dict,use_scores, use_genes, num_procs)
         merge_cost+=merge_time
         for p in paths_set:
-            name = get_spades_type_name(path_count, p[0], SEQS, max_k, G, p[1])+"_"+p[2]+"("+str(p[-1])+")"
+            name = get_spades_type_name(path_count, p[0], SEQS, max_k, G, p[1])+"_"+p[2]
+
             seq = get_seq_from_path(p[0], SEQS, max_k_val=max_k)
             # print(p[0])
             # print(" ")
             if len(seq)>=min_length:
                 f_cycs_fasta.write(">" + name + "\n" + seq + "\n")
                 f_cyc_paths.write(name + "\n" +str(p[0])+ "\n" +
-                 str([get_num_from_spades_name(n) for n in p[0]]) + "\n")
+                str([get_num_from_spades_name(n) for n in p[0]]) + "\n")
+                f_cyc_seeds.write(name + "\n" +str(p[-1])+ "\n" +
+                str([get_num_from_spades_name(n) for n in p[-1]]) + "\n")
+                
             path_count += 1
         logger.info(f"{processed_comps}/ {all_comps} have been processed...")
         print(f"{processed_comps}/ {all_comps} have been processed...")
