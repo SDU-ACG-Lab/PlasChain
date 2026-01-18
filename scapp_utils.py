@@ -302,7 +302,8 @@ def get_path_covs(path, G, discount=False):
             
             if pos_name not in node_cov_cache:
                 # 只计算一次
-                raw_anchored_cov = calc_anchored_cov(n, path, G)
+                # raw_anchored_cov = calc_anchored_cov(n, path, G)
+                raw_anchored_cov = get_discounted_node_cov(n, path, G)
                 
                 # 在这里直接做除法，存入缓存
                 if cnts[pos_name] > 1:
@@ -1610,7 +1611,7 @@ def get_score_from_path(path,SEQS,max_k=77,num_procs=1):
             sys.stderr = original_stderr
     return prob
 
-def get_contig_path(path_file,id_dict,SEQS,G,contig_path_file,score_out_file,min_contig_path_len=4,max_k=77,num_procs=1):
+def get_contig_path(path_file,id_dict,SEQS,G,contig_path_file,score_out_file,min_contig_path_len=3,max_k=77,num_procs=1):
     start_time = time.time()
     # 图中所有节点的set集合
     node_set = set(G.nodes())
