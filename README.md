@@ -179,6 +179,15 @@ There are some other files may be useful:
 - `PlasChain/simulate_script/association.txt` provides the mapping between each reference plasmid and its corresponding host chromosome; a null value indicates that the plasmid was randomly selected as a supplementary sequence (i.e., not derived from any real host chromosome).
 - `PlasChain/simulate_script/inter/ua.txt` provides the mapping between each reference plasmid and its assigned host chromosome; supplementary plasmids are randomly attached to existing host chromosomes.
 
-### Reproduction
-如果要进行论文的复现，我们在simulaiton_data文件夹中提供了模拟数据集中使用chromosome以及随机引入的短质粒，并提供了chromosome的abundance.复现步骤如下：
-1. 利用chromosome的abundance
+### Reproducing the Paper's Results
+
+The simulation_data folder contains all necessary inputs: bacterial genomes, randomly introduced short plasmids, and chromosomal abundance data.
+
+Steps:
+
+1. Split the bacterial whole genomes into separate chromosome and plasmid files.
+2. Simulate the chromosomal component using iss based on the provided abundance.
+3. Randomly associate the selected short plasmids with the existing chromosomes to define host-plasmid pairs.
+4. Compute plasmid copy numbers based on the host chromosome copy numbers (see Supplementary Material for formulas) to determine plasmid abundance and read counts.
+5. Simulate the plasmid component using iss.
+6. Concatenate the chromosomal and plasmid reads.
