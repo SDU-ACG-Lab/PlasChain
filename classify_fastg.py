@@ -4,7 +4,7 @@
 # Provide a command line script to classify sequences in a fasta file
 ###
 
-from scapp_utils import readfq
+from plaschain_utils import readfq
 from plasclass import plasclass
 
 import argparse

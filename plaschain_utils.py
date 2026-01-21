@@ -20,7 +20,7 @@ from functools import wraps
 import PARAMS
 
 complements = {'A':'T', 'C':'G', 'G':'C', 'T':'A'}
-logger = logging.getLogger("scapp_logger")
+logger = logging.getLogger("plaschain_logger")
 
 
 worker_data = {}

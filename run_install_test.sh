@@ -6,7 +6,7 @@ fi
 
 echo "It will take a few minutes"
 
-python scapp.py -g ./test/test.fastg -b ./test/test.bam -path ./test/test.paths -o ./test/out -db $1 > /dev/null 2>&1
+python plaschain.py -g ./test/test.fastg -b ./test/test.bam -path ./test/test.paths -o ./test/out -db $1 > /dev/null 2>&1
 
 if [[ "$(grep '7501' ./test/out/test.confident_cycs.fasta | awk -F '_' '{print $6}')" == "11.62325" && \
       "$(grep '6099' ./test/out/test.confident_cycs.fasta | awk -F '_' '{print $6}')" == "12.46750" && \
