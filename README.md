@@ -181,7 +181,7 @@ There are some other files may be useful:
 
 ### Reproducing the Paper's Results
 
-The simulation_data folder contains all necessary inputs: bacterial genomes, randomly introduced short plasmids, and chromosomal abundance data.
+The `simulation_data` folder contains all necessary inputs: bacterial genomes, randomly introduced short plasmids, and chromosomal abundance data.
 
 Steps:
 
