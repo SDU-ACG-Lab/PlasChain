@@ -178,3 +178,7 @@ There are some other files may be useful:
 - `PlasChain/simulate_script/selected_fna.txt` reportes the selected reference genome.
 - `PlasChain/simulate_script/association.txt` provides the mapping between each reference plasmid and its corresponding host chromosome; a null value indicates that the plasmid was randomly selected as a supplementary sequence (i.e., not derived from any real host chromosome).
 - `PlasChain/simulate_script/inter/ua.txt` provides the mapping between each reference plasmid and its assigned host chromosome; supplementary plasmids are randomly attached to existing host chromosomes.
+
+### Reproduction
+如果要进行论文的复现，我们在simulaiton_data文件夹中提供了模拟数据集中使用chromosome以及随机引入的短质粒，并提供了chromosome的abundance.复现步骤如下：
+1. 利用chromosome的abundance
