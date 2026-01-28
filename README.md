@@ -29,7 +29,7 @@ conda activate PlasChain
 
 
 ## Database
-PlasChain requires the plasmid-specific genes (PSGs) stored in the data directory to annotate the assembly graph.
+PlasChain requires the plasmid-specific genes (PSGs) stored in the `data` directory to annotate the assembly graph.
 Platon depends on a custom database which can be download here.
  [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.4066768.svg)](https://doi.org/10.5281/zenodo.4066768)
 
