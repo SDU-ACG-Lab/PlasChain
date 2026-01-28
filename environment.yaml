@@ -7,7 +7,7 @@ channels:
 dependencies:
   - _libgcc_mutex=0.1=main
   - _openmp_mutex=5.1=1_gnu
-  - biopython=1.79=py37h5e8e339_1
+  - biopython
   - blas=1.0=mkl
   - blast=2.12.0=pl5262h3289130_0
   - boost-cpp=1.74.0=h359cf19_6
