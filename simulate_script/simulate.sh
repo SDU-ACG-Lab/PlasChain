@@ -5,6 +5,12 @@ CHROMOSOME_READ_NUM=$1
 echo "chromosome_reads	$CHROMOSOME_READ_NUM" 
 echo "chromosome_reads	$CHROMOSOME_READ_NUM" >> $SIMULATION_INFO
 
+# 检测 iss 是否安装
+if ! command -v iss &> /dev/null; then
+    echo "Error: InSilicoSeq (iss) is not installed."
+    echo "You can install it via: conda install -c bioconda insilicoseq=1.5.4 biopython=1.78"
+    exit 1
+fi
 
 #根据指定数量模拟染色体的read
 iss generate --cpus 32 --genomes chromosome/*.fasta --n_reads $CHROMOSOME_READ_NUM --model hiseq --output simulation/sim1_chromosome
