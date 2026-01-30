@@ -3,9 +3,9 @@
 SIMULATION_INFO=./simulation_info.txt
 
 #删除上一次模拟的数据
-rm ./chromosome/*.fasta
-rm ./plasmid/*.fasta
-rm ./plasmid/*.cycle
+rm -f ./chromosome/*.fasta
+rm -f ./plasmid/*.fasta
+rm -f ./plasmid/*.cycle
 
 # 从源文件中剥离染色体和质粒，并构建基本联系
 > association.txt
