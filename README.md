@@ -171,7 +171,7 @@ cd PlasChain/simulate_script
 chmod u+x ./*.sh ./*.awk
 ./run.sh <num of bacteria> <num of supplementary short plasmid> <num of reads>"
 ```
-Then you can get the simulated pair-end reads in `PlasChain/simulate_script/simulation`.
+Then you can get the simulated pair-end reads in `PlasChain/simulate_script/simulation` and reference in `PlasChain/simulate_script/plasmid`.
 
 There are some other files may be useful:
 - `PlasChain/simulate_script/chromosome_size.txt` reportes the length of reference chromosome.
