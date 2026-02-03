@@ -112,10 +112,6 @@ Under the `logs` subdirectory, the file `plaschain.log` contains all information
 ## Advanced usage
 More advanced command line options allow for different stages in the PlasChain pipeline to be modified:
 
-`-sc/--use_scores`: Flag to determine whether to use plasmid scores. Use `False` to turn off plasmid score use. Default: `True`.
-
-`-gh/--use_gene_hits`: Flag to determine whether to use plasmid specific genes. Use `False` to turn off plasmid gene use. Default: `True`.
-
 `-pc/--plasclass`: PlasClass score file. If PlasClass classification of the assembly graph nodes has already been performed, provide the name of the PlasClass output file. (For example: the `intermediate_files/plasclass.out` file from a previous run of PlasChain).
 
 In addition, all of the different thresholds used in the algorithm can be changed by the user:
