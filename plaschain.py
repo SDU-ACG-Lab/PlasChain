@@ -51,15 +51,6 @@ def parse_user_input():
         required=False, type=int, default=16
     )
 
-    parser.add_argument('-sc','--use_scores',
-        help='Boolean flag of whether to use sequence classification scores in plasmid assembly',
-        required=False, type=str, default='True'
-    )
-
-    parser.add_argument('-gh','--use_gene_hits',
-        help='Boolean flag of whether to use plasmid-specific gene hits in plasmid assembly',
-        required=False, type=str, default='True'
-    )
     parser.add_argument('-b','--bam',
         help='BAM file resulting from aligning reads to contigs file, filtering for best matches',
         required=False, type=str
@@ -150,8 +141,8 @@ def main():
     plasflow_file = args.plasflow # these are mutually exclusive
 
     # flags
-    use_scores = True if args.use_scores in ['True','true'] else False
-    use_genes = True if args.use_gene_hits in ['True','true'] else False
+    use_scores = True 
+    use_genes = True 
 
 
     # default threshold variables
