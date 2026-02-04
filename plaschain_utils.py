@@ -1871,7 +1871,7 @@ def _weight_function(G, weight):
 def _dijkstra_multisource(G, path_dict: dict,node_score_dict,node_vec_dict,node_support_dict, SEQS, source, weight, pred=None, paths=None,
                                 cutoff=None, target=None, max_k_val=77):
     """
-    使用 Min-Max 松弛规则的 Dijkstra 风格路径搜索，寻找瓶颈最小的路径。
+    使用Dijkstra 风格路径搜索，寻找瓶颈最小的路径。
     在瓶颈权重相同时，使用路径长度（边数）作为平局打破规则，选择更短的路径。
     """
     G_succ = G._succ if G.is_directed() else G._adj
@@ -1879,9 +1879,9 @@ def _dijkstra_multisource(G, path_dict: dict,node_score_dict,node_vec_dict,node_
     push = heappush
     pop = heappop
     
-    # dist 存储 Min-Max 权重（瓶颈 Cost）
+    # dist 存储权重（瓶颈 Cost）
     dist = {}
-    # seen 存储在 fringe 中的 Min-Max 权重
+    # seen 存储在 fringe 中的权重
     seen = {}
     c = count()
     fringe = []
@@ -1952,8 +1952,8 @@ def _dijkstra_multisource(G, path_dict: dict,node_score_dict,node_vec_dict,node_
                     current_minmax_cost, current_length = seen.get(u_end_node, (float('inf'), float('inf')))
 
                     # 比较规则: 
-                    # 1. 新的 Min-Max 权重必须更小 (vu_dist < current_minmax_cost)
-                    # 2. 如果 Min-Max 权重相同，新的路径必须更短 (vu_dist == current_minmax_cost AND new_length < current_length)
+                    # 1. 新的权重必须更小 (vu_dist < current_minmax_cost)
+                    # 2. 如果权重相同，新的路径必须更短 (vu_dist == current_minmax_cost AND new_length < current_length)
                     if vu_dist < current_minmax_cost or \
                         (vu_dist == current_minmax_cost and new_length < current_length):
                         through_contig = True
@@ -2445,7 +2445,6 @@ def calc_anchored_cov(node, path, G, max_depth=20):
             next_n = succs[0]
             
             # 停止条件 B: 下一个是汇合点 (Merge Point)
-            # 我们流向了一个大熔炉，我们的贡献由当前的输出决定
             if G.in_degree(next_n) != 1:
                 downstream_flow = get_path_flow(curr, 'succ')
                 break
